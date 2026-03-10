@@ -38,7 +38,7 @@
             map.on("load", () => {
                 map.addSource("gfs-source", {
                     type: "raster",
-                    tiles: ["https://tiles.openscicomp.io/datasets/noaa-gfs-forecast/tiles/WebMercatorQuad/{z}/{y}/{x}?variables=temperature_2m&style=raster/viridis&width=256&height=256&f=png"],
+                    tiles: ["https://tiles.openscicomp.io/datasets/noaa-gfs-forecast/tiles/WebMercatorQuad/{z}/{y}/{x}?variables=temperature_2m&style=raster/viridis&width=256&height=256&f=png&colorscalerange=220,320"],
                     tileSize: 256,
                 });
 
