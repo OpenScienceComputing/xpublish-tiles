@@ -1,0 +1,68 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>NOAA GFS Temperature - tiles.openscicomp.io</title>
+        <meta
+            name="viewport"
+            content="initial-scale=1,maximum-scale=1,user-scalable=no"
+        />
+        <link
+            href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
+            rel="stylesheet"
+        />
+        <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+        <style>
+            body {
+                margin: 0;
+                padding: 0;
+            }
+            #map {
+                position: absolute;
+                top: 0;
+                bottom: 0;
+                width: 100%;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="map"></div>
+        <script>
+            const map = new maplibregl.Map({
+                container: "map",
+                style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+                zoom: 2,
+                center: [-95, 40],
+            });
+
+            map.on("load", () => {
+                map.addSource("gfs-source", {
+                    type: "raster",
+                    url: "https://tiles.openscicomp.io/datasets/noaa-gfs-forecast/tiles/WebMercatorQuad/tilejson.json?variables=temperature_2m&style=raster/viridis&width=256&height=256",
+                    tileSize: 256,
+                });
+
+                map.addLayer(
+                    {
+                        id: "gfs-layer",
+                        type: "raster",
+                        source: "gfs-source",
+                        paint: {
+                            "raster-opacity": 0.7,
+                        },
+                    },
+                );
+            });
+
+            map.on("style.load", function () {
+                map.on("click", function (e) {
+                    var coordinates = e.lngLat;
+                    new maplibregl.Popup()
+                        .setLngLat(coordinates)
+                        .setHTML("you clicked here: <br/>" + coordinates)
+                        .addTo(map);
+                });
+            });
+        </script>
+    </body>
+</html>
