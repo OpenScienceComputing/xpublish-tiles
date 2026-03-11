@@ -466,6 +466,8 @@
                     variableSelect.innerHTML = layers
                         .map(l => `<option value="${l.id}">${l.title || l.id}</option>`)
                         .join("");
+                    const preferred = layers.find(l => l.id === "temperature_2m");
+                    if (preferred) variableSelect.value = preferred.id;
                     variableSelect.disabled = false;
                     updateBtn.disabled = false;
                     updateDimControls(variableSelect.value);
