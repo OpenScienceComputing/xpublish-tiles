@@ -1,0 +1,371 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>Weather Forecast Explorer</title>
+        <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+        <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+        <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+        <style>
+            body { margin: 0; padding: 0; font-family: sans-serif; }
+            #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+            #controls {
+                position: absolute;
+                top: 10px;
+                left: 10px;
+                z-index: 1;
+                background: white;
+                padding: 16px;
+                border-radius: 8px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+                width: 300px;
+                max-height: calc(100vh - 40px);
+                overflow-y: auto;
+            }
+            #controls h3 { margin: 0 0 12px 0; font-size: 15px; color: #333; }
+            .ctrl-label {
+                display: block;
+                margin-top: 10px;
+                font-size: 11px;
+                font-weight: 700;
+                color: #555;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            .ctrl-label span { font-weight: 400; float: right; }
+            #controls select,
+            #controls input[type="number"] {
+                width: 100%;
+                box-sizing: border-box;
+                padding: 6px 8px;
+                margin-top: 4px;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                font-size: 13px;
+            }
+            .range-row { display: flex; gap: 8px; margin-top: 4px; }
+            .range-row input { flex: 1; }
+            .range-row span { line-height: 32px; font-size: 13px; color: #666; }
+            #update-btn {
+                width: 100%;
+                margin-top: 14px;
+                padding: 9px;
+                background: #4a90e2;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 14px;
+                font-weight: 600;
+            }
+            #update-btn:hover:not(:disabled) { background: #357abd; }
+            #update-btn:disabled { background: #aaa; cursor: default; }
+            #status { font-size: 11px; color: #888; margin-top: 8px; min-height: 16px; text-align: center; }
+        </style>
+    </head>
+    <body>
+        <div id="map"></div>
+        <div id="controls">
+            <h3>Weather Forecast Explorer</h3>
+
+            <label class="ctrl-label">Model</label>
+            <select id="model-select"><option>Loading...</option></select>
+
+            <label class="ctrl-label">Variable</label>
+            <select id="variable-select" disabled><option>Select a model first</option></select>
+
+            <!-- Dynamic dimension selectors (time, level, ensemble member, etc.) -->
+            <div id="dim-controls"></div>
+
+            <label class="ctrl-label">Colormap</label>
+            <select id="colormap-select">
+                <option value="viridis">Viridis</option>
+                <option value="turbo">Turbo</option>
+                <option value="RdBu_r">Red-Blue</option>
+                <option value="plasma">Plasma</option>
+                <option value="coolwarm">Coolwarm</option>
+                <option value="inferno">Inferno</option>
+                <option value="magma">Magma</option>
+            </select>
+
+            <label class="ctrl-label">Color Range (blank = auto)</label>
+            <div class="range-row">
+                <input type="number" id="color-min" placeholder="Min" step="any" />
+                <span>to</span>
+                <input type="number" id="color-max" placeholder="Max" step="any" />
+            </div>
+
+            <label class="ctrl-label">Opacity <span id="opacity-value">70%</span></label>
+            <input type="range" id="opacity" min="0" max="100" value="70"
+                   style="width:100%; margin-top:4px;" />
+
+            <button id="update-btn" disabled>Update Map</button>
+            <div id="status"></div>
+        </div>
+
+        <script>
+            const BASE_URL = "https://tiles.openscicomp.io";
+            const TMS = "WebMercatorQuad";
+
+            let layersData = {};  // varId -> layer object with extents
+
+            const modelSelect   = document.getElementById("model-select");
+            const variableSelect = document.getElementById("variable-select");
+            const dimControls   = document.getElementById("dim-controls");
+            const colormapSelect = document.getElementById("colormap-select");
+            const colorMin      = document.getElementById("color-min");
+            const colorMax      = document.getElementById("color-max");
+            const opacitySlider = document.getElementById("opacity");
+            const opacityValue  = document.getElementById("opacity-value");
+            const updateBtn     = document.getElementById("update-btn");
+            const statusEl      = document.getElementById("status");
+
+            function setStatus(msg) { statusEl.textContent = msg; }
+
+            // --- Dimension parsing helpers ---
+
+            function parseISO8601ToHours(dur) {
+                if (!dur) return null;
+                const m = dur.match(/P(?:(\d+\.?\d*)D)?(?:T(?:(\d+\.?\d*)H)?(?:(\d+\.?\d*)M)?)?/);
+                if (!m) return null;
+                return parseFloat(m[1] || 0) * 24 + parseFloat(m[2] || 0) + parseFloat(m[3] || 0) / 60;
+            }
+
+            function nsToHours(nsStr) {
+                const ns = parseFloat(String(nsStr).split(" ")[0]);
+                return ns / 1e9 / 3600;
+            }
+
+            function formatHours(h) {
+                const days = Math.floor(h / 24);
+                const rem  = Math.round(h % 24);
+                if (days === 0) return `${rem}h`;
+                if (rem  === 0) return `${days}d`;
+                return `${days}d ${rem}h`;
+            }
+
+            function fmtDatetime(iso) {
+                return iso.replace("T", " ").replace(/\.000$/, "").replace(/Z$/, "");
+            }
+
+            // Build a <select> element for a single dimension extent
+            function buildDimSelect(dimName, extentInfo) {
+                const { interval, resolution, description, units, default: defVal } = extentInfo;
+                const sel = document.createElement("select");
+                sel.id = `dim-${dimName}`;
+                sel.style.cssText = "width:100%; box-sizing:border-box; padding:6px 8px; margin-top:4px; border:1px solid #ccc; border-radius:4px; font-size:13px;";
+
+                const isNs       = typeof interval[0] === "string" && interval[0].includes("nanoseconds");
+                const isDatetime = typeof interval[0] === "string" && /\d{4}-\d{2}/.test(interval[0]);
+
+                if (isNs) {
+                    // Timedelta dimension (lead_time, forecast_period, etc.)
+                    const maxH = nsToHours(interval[1]);
+                    const defH = defVal != null ? nsToHours(String(defVal)) : maxH;
+                    const step = maxH <= 24 ? 1 : maxH <= 120 ? 3 : 6;
+
+                    let closestDiff = Infinity, defaultVal = null;
+                    for (let h = 0; h <= maxH + 0.001; h += step) {
+                        const opt = document.createElement("option");
+                        opt.value = `${h} hours`;
+                        opt.textContent = formatHours(h);
+                        sel.appendChild(opt);
+                        const diff = Math.abs(h - defH);
+                        if (diff < closestDiff) { closestDiff = diff; defaultVal = opt.value; }
+                    }
+                    if (defaultVal) sel.value = defaultVal;
+
+                } else if (isDatetime) {
+                    // Datetime dimension (init_time, time, etc.)
+                    const stepH  = parseISO8601ToHours(resolution) || 6;
+                    const maxDate = new Date(interval[1]);
+                    const minDate = new Date(interval[0]);
+                    const defDate = defVal ? new Date(defVal) : maxDate;
+                    const stepMs = stepH * 3600000;
+
+                    const options = [];
+                    let cur = new Date(maxDate);
+                    while (cur >= minDate && options.length < 60) {
+                        options.push(new Date(cur));
+                        cur = new Date(cur.getTime() - stepMs);
+                    }
+
+                    options.forEach(d => {
+                        const iso = d.toISOString().replace(".000Z", "");
+                        const opt = document.createElement("option");
+                        opt.value = iso;
+                        opt.textContent = fmtDatetime(iso);
+                        sel.appendChild(opt);
+                    });
+
+                    // Select closest to default
+                    const defIso = defDate.toISOString().slice(0, 16);
+                    for (const opt of sel.options) {
+                        if (opt.value.startsWith(defIso)) { sel.value = opt.value; break; }
+                    }
+
+                } else {
+                    // Numeric dimension (ensemble_member, level, etc.)
+                    const minV = parseFloat(interval[0]);
+                    const maxV = parseFloat(interval[1]);
+                    const step = resolution != null ? parseFloat(resolution) : 1;
+                    const defV = defVal != null ? parseFloat(defVal) : minV;
+                    const unitSuffix = units && units !== "1" ? ` ${units}` : "";
+
+                    for (let v = minV; v <= maxV + 0.0001; v += step) {
+                        const r = Math.round(v * 1000) / 1000;
+                        const opt = document.createElement("option");
+                        opt.value = String(r);
+                        opt.textContent = `${r}${unitSuffix}`;
+                        sel.appendChild(opt);
+                    }
+                    sel.value = String(Math.round(defV * 1000) / 1000);
+                }
+
+                return sel;
+            }
+
+            // Rebuild dimension controls when variable changes
+            function updateDimControls(varId) {
+                dimControls.innerHTML = "";
+                const layer = layersData[varId];
+                if (!layer?.extents) return;
+
+                for (const [dimName, extentInfo] of Object.entries(layer.extents)) {
+                    const wrapper = document.createElement("div");
+                    const lbl = document.createElement("label");
+                    lbl.className = "ctrl-label";
+                    lbl.textContent = extentInfo.description || dimName;
+                    wrapper.appendChild(lbl);
+                    wrapper.appendChild(buildDimSelect(dimName, extentInfo));
+                    dimControls.appendChild(wrapper);
+                }
+            }
+
+            // Build tile URL from all current control values
+            function buildTileUrl() {
+                const datasetId = modelSelect.value;
+                const variable  = variableSelect.value;
+                const colormap  = colormapSelect.value;
+                const cmin = colorMin.value;
+                const cmax = colorMax.value;
+
+                let url = `${BASE_URL}/datasets/${datasetId}/tiles/${TMS}/{z}/{y}/{x}` +
+                    `?variables=${encodeURIComponent(variable)}` +
+                    `&style=raster/${colormap}` +
+                    `&width=256&height=256&f=png&render_errors=true`;
+
+                if (cmin !== "" && cmax !== "") {
+                    url += `&colorscalerange=${cmin},${cmax}`;
+                }
+
+                // Append dimension selectors
+                const layer = layersData[variable];
+                if (layer?.extents) {
+                    for (const dimName of Object.keys(layer.extents)) {
+                        const sel = document.getElementById(`dim-${dimName}`);
+                        if (sel?.value) {
+                            url += `&${encodeURIComponent(dimName)}=${encodeURIComponent(sel.value)}`;
+                        }
+                    }
+                }
+
+                return url;
+            }
+
+            // --- Map ---
+
+            const map = new maplibregl.Map({
+                container: "map",
+                style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+                zoom: 2,
+                center: [-30, 30],
+            });
+            map.addControl(new maplibregl.NavigationControl());
+
+            let mapReady = false;
+            map.on("load", () => {
+                map.addSource("tiles-source", { type: "raster", tiles: [], tileSize: 256 });
+                map.addLayer({
+                    id: "tiles-layer",
+                    type: "raster",
+                    source: "tiles-source",
+                    paint: { "raster-opacity": 0.7 },
+                });
+                mapReady = true;
+            });
+
+            opacitySlider.addEventListener("input", () => {
+                const val = opacitySlider.value;
+                opacityValue.textContent = `${val}%`;
+                if (mapReady) map.setPaintProperty("tiles-layer", "raster-opacity", val / 100);
+            });
+
+            updateBtn.addEventListener("click", () => {
+                if (!mapReady) return;
+                const source = map.getSource("tiles-source");
+                if (source) {
+                    source.setTiles([buildTileUrl()]);
+                    setStatus("Map updated.");
+                    setTimeout(() => setStatus(""), 2000);
+                }
+            });
+
+            // --- Data loading ---
+
+            variableSelect.addEventListener("change", () => updateDimControls(variableSelect.value));
+
+            async function loadVariables(datasetId) {
+                variableSelect.disabled = true;
+                updateBtn.disabled = true;
+                variableSelect.innerHTML = "<option>Loading...</option>";
+                dimControls.innerHTML = "";
+                layersData = {};
+                setStatus("Loading variables...");
+                try {
+                    const resp = await fetch(`${BASE_URL}/datasets/${datasetId}/tiles/`);
+                    const data = await resp.json();
+                    const wmqTileset = (data.tilesets || []).find(ts => ts.title?.includes(TMS));
+                    const layers = wmqTileset?.layers || [];
+
+                    if (!layers.length) {
+                        variableSelect.innerHTML = "<option>No variables found</option>";
+                        setStatus("No variables found");
+                        return;
+                    }
+
+                    layers.forEach(l => { layersData[l.id] = l; });
+                    variableSelect.innerHTML = layers
+                        .map(l => `<option value="${l.id}">${l.title || l.id}</option>`)
+                        .join("");
+                    variableSelect.disabled = false;
+                    updateBtn.disabled = false;
+                    updateDimControls(variableSelect.value);
+                    setStatus("");
+                } catch (e) {
+                    setStatus("Error loading variables: " + e.message);
+                    variableSelect.innerHTML = "<option>Error</option>";
+                }
+            }
+
+            async function loadDatasets() {
+                setStatus("Loading models...");
+                try {
+                    const resp = await fetch(`${BASE_URL}/datasets`);
+                    const raw = await resp.json();
+                    const ids = Array.isArray(raw) ? raw : (raw.datasets || Object.keys(raw));
+                    modelSelect.innerHTML = ids
+                        .map(id => `<option value="${id}">${id}</option>`)
+                        .join("");
+                    modelSelect.addEventListener("change", () => loadVariables(modelSelect.value));
+                    setStatus("");
+                    await loadVariables(ids[0]);
+                } catch (e) {
+                    setStatus("Error loading models: " + e.message);
+                }
+            }
+
+            loadDatasets();
+        </script>
+    </body>
+</html>
