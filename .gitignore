@@ -213,3 +213,4 @@ src/xpublish_tiles/_version.py
 
 # CDK
 deploy/cdk.out/
+deploy/env.sh
