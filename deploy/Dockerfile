@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir "xpublish-tiles==0.4.2" "uvicorn[standard]"
+RUN pip install --no-cache-dir "xpublish-tiles @ git+https://github.com/OpenScienceComputing/xpublish-tiles.git" "uvicorn[standard]"
 
 COPY serve.py .
 
