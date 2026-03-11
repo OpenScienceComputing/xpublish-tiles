@@ -178,9 +178,9 @@
                 } else if (isDatetime) {
                     // Datetime dimension (init_time, time, etc.)
                     const stepH  = parseISO8601ToHours(resolution) || 6;
-                    const maxDate = new Date(interval[1]);
-                    const minDate = new Date(interval[0]);
-                    const defDate = defVal ? new Date(defVal) : maxDate;
+                    const maxDate = new Date(interval[1] + "Z");
+                    const minDate = new Date(interval[0] + "Z");
+                    const defDate = defVal ? new Date(defVal + "Z") : maxDate;
                     const stepMs = stepH * 3600000;
 
                     const options = [];
