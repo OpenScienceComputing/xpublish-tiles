@@ -354,10 +354,14 @@ async def create_tileset_for_tms(
             dataset, var_name, tms_summary.crs
         )
 
+        attrs = var_data.attrs
+        valid_min = attrs.get("valid_min") or attrs.get("actual_range", [None])[0]
+        valid_max = attrs.get("valid_max") or attrs.get("actual_range", [None, None])[1]
+
         layer = Layer(
             id=var_name,
-            title=str(var_data.attrs.get("long_name", var_name)),
-            description=var_data.attrs.get("description", ""),
+            title=str(attrs.get("long_name", var_name)),
+            description=attrs.get("description", ""),
             dataType=DataType.COVERAGE,
             boundingBox=var_bounding_box,
             crs=tms_summary.crs,
@@ -371,6 +375,8 @@ async def create_tileset_for_tms(
                 )
             ],
             extents=extents,
+            valid_min=float(valid_min) if valid_min is not None else None,
+            valid_max=float(valid_max) if valid_max is not None else None,
         )
         layers.append(layer)
 

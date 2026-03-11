@@ -955,6 +955,22 @@ class Layer(BaseModel):
             }
         ),
     ] = None
+    valid_min: Annotated[
+        float | None,
+        Field(
+            json_schema_extra={
+                "description": "Minimum valid data value for colorscale range guidance",
+            }
+        ),
+    ] = None
+    valid_max: Annotated[
+        float | None,
+        Field(
+            json_schema_extra={
+                "description": "Maximum valid data value for colorscale range guidance",
+            }
+        ),
+    ] = None
 
 
 class CenterPoint(BaseModel):

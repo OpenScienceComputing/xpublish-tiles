@@ -317,9 +317,22 @@
                 }
             });
 
+            function autoPopulateColorRange(varId) {
+                const layer = layersData[varId];
+                if (layer?.valid_min != null && colorMin.value === "") {
+                    colorMin.value = layer.valid_min;
+                }
+                if (layer?.valid_max != null && colorMax.value === "") {
+                    colorMax.value = layer.valid_max;
+                }
+            }
+
             // --- Data loading ---
 
-            variableSelect.addEventListener("change", () => updateDimControls(variableSelect.value));
+            variableSelect.addEventListener("change", () => {
+                updateDimControls(variableSelect.value);
+                autoPopulateColorRange(variableSelect.value);
+            });
 
             async function loadVariables(datasetId) {
                 variableSelect.disabled = true;
@@ -347,6 +360,7 @@
                     variableSelect.disabled = false;
                     updateBtn.disabled = false;
                     updateDimControls(variableSelect.value);
+                    autoPopulateColorRange(variableSelect.value);
                     setStatus("");
                 } catch (e) {
                     setStatus("Error loading variables: " + e.message);
