@@ -59,6 +59,8 @@ def create_cf_cname(token, name, value):
     data = resp.json()
     if data["success"]:
         print(f"Created CNAME: {name} -> {value}")
+    elif any(e.get("code") == 81053 for e in data.get("errors", [])):
+        print(f"CNAME already exists: {name}")
     else:
         print(f"Failed to create CNAME: {data['errors']}")
         sys.exit(1)
@@ -83,30 +85,34 @@ def main():
             time.sleep(POLL_INTERVAL)
     print(f"Found cert: {cert_arn}")
 
-    print("Waiting for DNS validation record...")
-    name, value = None, None
-    while name is None:
-        name, value = get_validation_record(acm, cert_arn)
-        if name is None:
-            time.sleep(POLL_INTERVAL)
-
-    if cf_record_exists(token, name):
-        print(f"CNAME already exists: {name}")
+    detail = acm.describe_certificate(CertificateArn=cert_arn)
+    if detail["Certificate"]["Status"] == "ISSUED":
+        print("Certificate already issued, skipping DNS validation.")
     else:
-        create_cf_cname(token, name, value)
+        print("Waiting for DNS validation record...")
+        name, value = None, None
+        while name is None:
+            name, value = get_validation_record(acm, cert_arn)
+            if name is None:
+                time.sleep(POLL_INTERVAL)
 
-    print("Waiting for certificate to be issued...")
-    while True:
-        detail = acm.describe_certificate(CertificateArn=cert_arn)
-        status = detail["Certificate"]["Status"]
-        if status == "ISSUED":
-            print("Certificate issued.")
-            break
-        elif status == "FAILED":
-            print("Certificate validation failed.")
-            cdk_proc.terminate()
-            sys.exit(1)
-        time.sleep(POLL_INTERVAL)
+        if cf_record_exists(token, name):
+            print(f"CNAME already exists: {name}")
+        else:
+            create_cf_cname(token, name, value)
+
+        print("Waiting for certificate to be issued...")
+        while True:
+            detail = acm.describe_certificate(CertificateArn=cert_arn)
+            status = detail["Certificate"]["Status"]
+            if status == "ISSUED":
+                print("Certificate issued.")
+                break
+            elif status == "FAILED":
+                print("Certificate validation failed.")
+                cdk_proc.terminate()
+                sys.exit(1)
+            time.sleep(POLL_INTERVAL)
 
     print("Waiting for cdk deploy to complete...")
     cdk_proc.wait()
