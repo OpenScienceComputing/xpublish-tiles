@@ -88,7 +88,7 @@
                 <option value="magma">Magma</option>
             </select>
 
-            <label class="ctrl-label">Color Range (blank = auto)</label>
+            <label class="ctrl-label">Color Range (required)</label>
             <div class="range-row">
                 <input type="number" id="color-min" placeholder="Min" step="any" />
                 <span>to</span>
@@ -255,9 +255,7 @@
                     `&style=raster/${colormap}` +
                     `&width=256&height=256&f=png&render_errors=true`;
 
-                if (cmin !== "" && cmax !== "") {
-                    url += `&colorscalerange=${cmin},${cmax}`;
-                }
+                url += `&colorscalerange=${cmin},${cmax}`;
 
                 // Append dimension selectors
                 const layer = layersData[variable];
@@ -303,6 +301,14 @@
 
             updateBtn.addEventListener("click", () => {
                 if (!mapReady) return;
+                if (colorMin.value === "" || colorMax.value === "") {
+                    setStatus("Please enter a color range (min and max).");
+                    colorMin.style.borderColor = colorMin.value === "" ? "red" : "#ccc";
+                    colorMax.style.borderColor = colorMax.value === "" ? "red" : "#ccc";
+                    return;
+                }
+                colorMin.style.borderColor = "#ccc";
+                colorMax.style.borderColor = "#ccc";
                 const source = map.getSource("tiles-source");
                 if (source) {
                     source.setTiles([buildTileUrl()]);
