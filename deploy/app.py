@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -21,8 +22,14 @@ class FluxTilesStack(Stack):
 
         cluster = ecs.Cluster(self, "Cluster", vpc=vpc)
 
+        commit_sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=os.path.dirname(__file__)
+        ).decode().strip()
+
         image = ecr_assets.DockerImageAsset(
-            self, "Image", directory=os.path.dirname(__file__)
+            self, "Image",
+            directory=os.path.dirname(__file__),
+            build_args={"COMMIT_SHA": commit_sha},
         )
 
         # DNS validation: CDK will pause and display the CNAME record to add in Cloudflare

@@ -4,7 +4,8 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir "xpublish-tiles @ git+https://github.com/OpenScienceComputing/xpublish-tiles.git" "uvicorn[standard]"
+ARG COMMIT_SHA=unknown
+RUN pip install --no-cache-dir "xpublish-tiles @ git+https://github.com/OpenScienceComputing/xpublish-tiles.git@${COMMIT_SHA}" "uvicorn[standard]"
 
 COPY serve.py .
 
