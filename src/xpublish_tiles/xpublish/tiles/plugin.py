@@ -203,6 +203,62 @@ class TilesPlugin(Plugin):
 
             return TilesetsList(tilesets=tilesets)
 
+        @router.get("/point")
+        async def get_point_value(
+            request: Request,
+            lat: float = Query(..., description="Latitude in WGS84"),
+            lon: float = Query(..., description="Longitude in WGS84"),
+            variables: list[str] = Query(...),
+            dataset: Dataset = Depends(deps.dataset),
+        ):
+            """Get data value at a specific lat/lon point (nearest neighbour)"""
+            selectors = {}
+            for param_name, param_value in request.query_params.items():
+                if param_name not in {*TILES_FILTERED_QUERY_PARAMS, "lat", "lon", "variables"}:
+                    if param_name in dataset.dims:
+                        selectors[param_name] = param_value
+
+            ds = dataset
+            for name, value_str in selectors.items():
+                try:
+                    _, value = parse_selector(str(value_str))
+                except ValueError as e:
+                    raise HTTPException(status_code=422, detail=str(e)) from e
+                try:
+                    typed_value = ds[name].dtype.type(value)
+                except (ValueError, TypeError):
+                    if ds[name].dtype.kind == "m":
+                        typed_value = pd.to_timedelta(value).to_timedelta64()
+                    elif ds[name].dtype.kind == "M":
+                        typed_value = pd.to_datetime(value).to_datetime64()
+                    else:
+                        raise HTTPException(status_code=422, detail=f"Cannot cast {name}={value_str!r}")
+                try:
+                    ds = ds.sel({name: typed_value}, method="nearest")
+                except KeyError as e:
+                    raise HTTPException(status_code=422, detail=f"Invalid selector: {name}={value_str!r}") from e
+
+            var_name = variables[0]
+            if var_name not in ds:
+                raise HTTPException(status_code=422, detail=f"Variable {var_name!r} not found")
+
+            grid = await async_run(guess_grid_system, ds, var_name)
+            da = ds[var_name]
+
+            try:
+                point = await async_run(
+                    lambda: da.sel({grid.X: lon, grid.Y: lat}, method="nearest").values.item()
+                )
+            except Exception as e:
+                raise HTTPException(status_code=422, detail=f"Point lookup failed: {e}") from e
+
+            try:
+                value_out = None if np.isnan(point) else float(point)
+            except (TypeError, ValueError):
+                value_out = point
+            units = da.attrs.get("units", "")
+            return {"variable": var_name, "value": value_out, "units": units, "lat": lat, "lon": lon}
+
         @router.get(
             "/{tileMatrixSetId}",
             response_model=TileSetMetadata,
@@ -352,62 +408,6 @@ class TilesPlugin(Plugin):
                 minzoom=minzoom,
                 maxzoom=maxzoom,
             )
-
-        @router.get("/point")
-        async def get_point_value(
-            request: Request,
-            lat: float = Query(..., description="Latitude in WGS84"),
-            lon: float = Query(..., description="Longitude in WGS84"),
-            variables: list[str] = Query(...),
-            dataset: Dataset = Depends(deps.dataset),
-        ):
-            """Get data value at a specific lat/lon point (nearest neighbour)"""
-            selectors = {}
-            for param_name, param_value in request.query_params.items():
-                if param_name not in {*TILES_FILTERED_QUERY_PARAMS, "lat", "lon", "variables"}:
-                    if param_name in dataset.dims:
-                        selectors[param_name] = param_value
-
-            ds = dataset
-            for name, value_str in selectors.items():
-                try:
-                    _, value = parse_selector(str(value_str))
-                except ValueError as e:
-                    raise HTTPException(status_code=422, detail=str(e)) from e
-                try:
-                    typed_value = ds[name].dtype.type(value)
-                except (ValueError, TypeError):
-                    if ds[name].dtype.kind == "m":
-                        typed_value = pd.to_timedelta(value).to_timedelta64()
-                    elif ds[name].dtype.kind == "M":
-                        typed_value = pd.to_datetime(value).to_datetime64()
-                    else:
-                        raise HTTPException(status_code=422, detail=f"Cannot cast {name}={value_str!r}")
-                try:
-                    ds = ds.sel({name: typed_value}, method="nearest")
-                except KeyError as e:
-                    raise HTTPException(status_code=422, detail=f"Invalid selector: {name}={value_str!r}") from e
-
-            var_name = variables[0]
-            if var_name not in ds:
-                raise HTTPException(status_code=422, detail=f"Variable {var_name!r} not found")
-
-            grid = await async_run(guess_grid_system, ds, var_name)
-            da = ds[var_name]
-
-            try:
-                point = await async_run(
-                    lambda: da.sel({grid.X: lon, grid.Y: lat}, method="nearest").values.item()
-                )
-            except Exception as e:
-                raise HTTPException(status_code=422, detail=f"Point lookup failed: {e}") from e
-
-            try:
-                value_out = None if np.isnan(point) else float(point)
-            except (TypeError, ValueError):
-                value_out = point
-            units = da.attrs.get("units", "")
-            return {"variable": var_name, "value": value_out, "units": units, "lat": lat, "lon": lon}
 
         @router.get("/{tileMatrixSetId}/{tileMatrix}/{tileRow}/{tileCol}")
         @with_accumulated_logs(
