@@ -371,12 +371,12 @@ class TilesPlugin(Plugin):
             ds = dataset
             for name, value_str in selectors.items():
                 try:
-                    method, value = parse_selector(str(value_str))
+                    _, value = parse_selector(str(value_str))
                 except ValueError as e:
                     raise HTTPException(status_code=422, detail=str(e)) from e
                 try:
                     typed_value = ds[name].dtype.type(value)
-                except ValueError:
+                except (ValueError, TypeError):
                     if ds[name].dtype.kind == "m":
                         typed_value = pd.to_timedelta(value).to_timedelta64()
                     elif ds[name].dtype.kind == "M":
@@ -384,7 +384,7 @@ class TilesPlugin(Plugin):
                     else:
                         raise HTTPException(status_code=422, detail=f"Cannot cast {name}={value_str!r}")
                 try:
-                    ds = ds.sel({name: typed_value}, method=method)
+                    ds = ds.sel({name: typed_value}, method="nearest")
                 except KeyError as e:
                     raise HTTPException(status_code=422, detail=f"Invalid selector: {name}={value_str!r}") from e
 
@@ -402,7 +402,10 @@ class TilesPlugin(Plugin):
             except Exception as e:
                 raise HTTPException(status_code=422, detail=f"Point lookup failed: {e}") from e
 
-            value_out = None if (isinstance(point, float) and np.isnan(point)) else point
+            try:
+                value_out = None if np.isnan(point) else float(point)
+            except (TypeError, ValueError):
+                value_out = point
             units = da.attrs.get("units", "")
             return {"variable": var_name, "value": value_out, "units": units, "lat": lat, "lon": lon}
 
