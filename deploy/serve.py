@@ -2,6 +2,7 @@ import icechunk
 import xarray as xr
 from fastapi.middleware.cors import CORSMiddleware
 import xpublish
+from xpublish.plugins import load_default_plugins
 
 from xpublish_tiles.xpublish.tiles.plugin import TilesPlugin
 from xpublish_tiles.xpublish.wms.plugin import WMSPlugin
@@ -36,7 +37,11 @@ datasets = {
 
 rest = xpublish.Rest(
     datasets=datasets,
-    plugins={"tiles": TilesPlugin(), "wms": WMSPlugin()},
+    plugins={
+        **load_default_plugins(),
+        "tiles": TilesPlugin(),
+        "wms": WMSPlugin(),
+    },
 )
 rest.app.add_middleware(CORSMiddleware, allow_origins=["*"])
 
