@@ -301,16 +301,28 @@
 
                 // Find a reference time (closest prior forecast initialization time)
                 let referenceTime = null;
+                let refDimName = null;
+
                 for (const [dimName, extentInfo] of Object.entries(layer.extents)) {
-                    const isDatetime = typeof extentInfo.interval[0] === "string" && /\d{4}-\d{2}/.test(extentInfo.interval[0]);
-                    if (isDatetime) {
+                    // Check for datetime dimension (either ISO string or explicitly named time)
+                    const isDatetime = (typeof extentInfo.interval[0] === "string" && /\d{4}-\d{2}/.test(extentInfo.interval[0])) ||
+                                       /time|run|reftime/i.test(dimName);
+                    
+                    if (isDatetime && controls[dimName]) {
                         const sel = controls[dimName];
+                        if (!sel.options.length) continue;
+
                         let bestIdx = 0;
-                        let bestTime = new Date(sel.options[0].value + "Z");
+                        let bestTime = null;
                         let foundPrior = false;
 
                         for (let i = 0; i < sel.options.length; i++) {
-                            const t = new Date(sel.options[i].value + "Z");
+                            const val = sel.options[i].value;
+                            // Ensure UTC parsing by ensuring T separator and Z suffix
+                            const t = isNaN(val) ? new Date(val.replace(" ", "T").replace(/Z$/, "") + "Z") : new Date(parseFloat(val) * 1000);
+                            
+                            if (isNaN(t.getTime())) continue;
+
                             if (t <= now) {
                                 if (!foundPrior || t > bestTime) {
                                     bestTime = t;
@@ -318,15 +330,22 @@
                                     foundPrior = true;
                                 }
                             } else if (!foundPrior) {
-                                // If we haven't found a prior time yet, keep track of the closest future time
-                                if (Math.abs(t - now) < Math.abs(bestTime - now)) {
+                                if (!bestTime || Math.abs(t - now) < Math.abs(bestTime - now)) {
                                     bestTime = t;
                                     bestIdx = i;
                                 }
                             }
                         }
-                        sel.selectedIndex = bestIdx;
-                        referenceTime = bestTime;
+
+                        if (bestTime) {
+                            sel.selectedIndex = bestIdx;
+                            // Prioritize dimensions that look like initialization times
+                            const isInitDim = /init|reftime|reference|run/i.test(dimName);
+                            if (!referenceTime || isInitDim || !/init|reftime|reference|run/i.test(refDimName)) {
+                                referenceTime = bestTime;
+                                refDimName = dimName;
+                            }
+                        }
                     }
                 }
 
