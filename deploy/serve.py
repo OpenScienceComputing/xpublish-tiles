@@ -99,7 +99,7 @@ async def schedule_refresh():
 
 @rest.app.get("/health")
 def health():
-    return {"status": "ok", "datasets": list(rest.datasets.keys())}
+    return {"status": "ok", "datasets": list(rest._datasets.keys())}
 
 
 app = rest.app
