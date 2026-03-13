@@ -299,15 +299,34 @@
                     sel.selectedIndex = closestIdx;
                 };
 
-                // Find a reference time (prefer latest init_time that isn't in future, or just latest)
+                // Find a reference time (closest prior forecast initialization time)
                 let referenceTime = null;
                 for (const [dimName, extentInfo] of Object.entries(layer.extents)) {
                     const isDatetime = typeof extentInfo.interval[0] === "string" && /\d{4}-\d{2}/.test(extentInfo.interval[0]);
                     if (isDatetime) {
                         const sel = controls[dimName];
-                        selectClosest(sel, now, (v) => new Date(v + "Z"));
-                        // If multiple datetimes, the last one processed wins as reference (usually OK)
-                        referenceTime = new Date(sel.value + "Z");
+                        let bestIdx = 0;
+                        let bestTime = new Date(sel.options[0].value + "Z");
+                        let foundPrior = false;
+
+                        for (let i = 0; i < sel.options.length; i++) {
+                            const t = new Date(sel.options[i].value + "Z");
+                            if (t <= now) {
+                                if (!foundPrior || t > bestTime) {
+                                    bestTime = t;
+                                    bestIdx = i;
+                                    foundPrior = true;
+                                }
+                            } else if (!foundPrior) {
+                                // If we haven't found a prior time yet, keep track of the closest future time
+                                if (Math.abs(t - now) < Math.abs(bestTime - now)) {
+                                    bestTime = t;
+                                    bestIdx = i;
+                                }
+                            }
+                        }
+                        sel.selectedIndex = bestIdx;
+                        referenceTime = bestTime;
                     }
                 }
 
