@@ -1,39 +1,72 @@
+import asyncio
+import logging
+from typing import Dict
+
 import icechunk
+import pystac
 import xarray as xr
-from fastapi.middleware.cors import CORSMiddleware
 import xpublish
+from fastapi.middleware.cors import CORSMiddleware
 from xpublish.plugins import load_default_plugins
 
 from xpublish_tiles.xpublish.tiles.plugin import TilesPlugin
 from xpublish_tiles.xpublish.wms.plugin import WMSPlugin
 
-DATASETS_CONFIG = [
-    ("ecmwf-ifs-ens-forecast", "dynamical-ecmwf-ifs-ens", "ecmwf-ifs-ens-forecast-15-day-0-25-degree/v0.1.0.icechunk/"),
-    ("noaa-gefs-analysis", "dynamical-noaa-gefs", "noaa-gefs-analysis/v0.1.2.icechunk/"),
-    ("noaa-gefs-forecast", "dynamical-noaa-gefs", "noaa-gefs-forecast-35-day/v0.2.0.icechunk/"),
-    ("noaa-gfs-analysis", "dynamical-noaa-gfs", "noaa-gfs-analysis/v0.1.0.icechunk/"),
-    ("noaa-gfs-forecast", "dynamical-noaa-gfs", "noaa-gfs-forecast/v0.2.7.icechunk/"),
-    ("noaa-hrrr-analysis-v0-1-0", "dynamical-noaa-hrrr", "noaa-hrrr-analysis/v0.1.0.icechunk/"),
-    ("noaa-hrrr-analysis-v0-2-0", "dynamical-noaa-hrrr", "noaa-hrrr-analysis/v0.2.0.icechunk/"),
-    ("noaa-hrrr-forecast", "dynamical-noaa-hrrr", "noaa-hrrr-forecast-48-hour/v0.1.0.icechunk/"),
-]
+CATALOG_URL = "https://r2-pub.openscicomp.io/stac/dynamical/catalog.json"
+
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("serve")
 
 
-def open_dataset(dataset_id: str, bucket: str, prefix: str) -> xr.Dataset:
+def open_dataset(item: pystac.Item) -> xr.Dataset:
+    # Find icechunk asset
+    asset = next(
+        (
+            a
+            for a in item.assets.values()
+            if a.media_type == "application/vnd.zarr+icechunk"
+            or "icechunk" in (a.title or "").lower()
+        ),
+        None,
+    )
+    if not asset:
+        raise ValueError(f"No icechunk asset found in item {item.id}")
+
+    href = asset.href
+    parts = href.removeprefix("s3://").split("/", 1)
+    bucket = parts[0]
+    prefix = parts[1]
+
     storage = icechunk.s3_storage(
         bucket=bucket, prefix=prefix, region="us-west-2", anonymous=True
     )
     repo = icechunk.Repository.open(storage)
     session = repo.readonly_session("main")
     ds = xr.open_zarr(session.store, chunks=None)
-    ds.attrs["_xpublish_id"] = dataset_id
+    ds.attrs["_xpublish_id"] = item.id
     return ds
 
 
-datasets = {
-    dataset_id: open_dataset(dataset_id, bucket, prefix)
-    for dataset_id, bucket, prefix in DATASETS_CONFIG
-}
+def fetch_datasets() -> Dict[str, xr.Dataset]:
+    logger.info(f"Fetching datasets from {CATALOG_URL}")
+    try:
+        catalog = pystac.Catalog.from_file(CATALOG_URL)
+        new_datasets = {}
+        for item in catalog.get_all_items():
+            try:
+                new_datasets[item.id] = open_dataset(item)
+                logger.info(f"Loaded dataset: {item.id}")
+            except Exception as e:
+                logger.error(f"Error loading dataset {item.id}: {e}")
+        return new_datasets
+    except Exception as e:
+        logger.error(f"Error fetching catalog: {e}")
+        return {}
+
+
+# Initialize datasets synchronously at startup
+datasets = fetch_datasets()
 
 rest = xpublish.Rest(
     datasets=datasets,
@@ -46,9 +79,27 @@ rest = xpublish.Rest(
 rest.app.add_middleware(CORSMiddleware, allow_origins=["*"])
 
 
+@rest.app.on_event("startup")
+async def schedule_refresh():
+    async def refresh_task():
+        while True:
+            await asyncio.sleep(3600)  # Refresh every hour
+            try:
+                new_datasets = await asyncio.to_thread(fetch_datasets)
+                if new_datasets:
+                    # xpublish.Rest._datasets is the internal mapping
+                    rest._datasets.clear()
+                    rest._datasets.update(new_datasets)
+                    logger.info(f"Successfully refreshed {len(new_datasets)} datasets")
+            except Exception as e:
+                logger.error(f"Background refresh failed: {e}")
+
+    asyncio.create_task(refresh_task())
+
+
 @rest.app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "datasets": list(rest.datasets.keys())}
 
 
 app = rest.app

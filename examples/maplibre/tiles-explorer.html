@@ -585,7 +585,7 @@
                         .join("");
                     modelSelect.addEventListener("change", () => loadVariables(modelSelect.value));
                     setStatus("");
-                    const defaultDataset = ids.find(id => id === "noaa-gfs-forecast") || ids[0];
+                    const defaultDataset = ids.find(id => id.includes("noaa-gfs-forecast")) || ids[0];
                     modelSelect.value = defaultDataset;
                     await loadVariables(defaultDataset);
                 } catch (e) {
