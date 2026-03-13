@@ -237,7 +237,7 @@
 
                     const options = [];
                     let cur = new Date(maxDate);
-                    while (cur >= minDate && options.length < 120) {
+                    while (cur >= minDate && options.length < 200) {
                         options.push(new Date(cur));
                         cur = new Date(cur.getTime() - stepMs);
                     }
@@ -312,6 +312,8 @@
                         const sel = controls[dimName];
                         if (!sel.options.length) continue;
 
+                        console.log(`Checking ${dimName}, now=${now.toISOString()}, count=${sel.options.length}, first=${sel.options[0].value}, last=${sel.options[sel.options.length-1].value}`);
+
                         let bestIdx = 0;
                         let bestTime = null;
                         let foundPrior = false;
@@ -339,6 +341,7 @@
 
                         if (bestTime) {
                             sel.selectedIndex = bestIdx;
+                            console.log(`Selected for ${dimName}: ${sel.options[bestIdx].value}, foundPrior=${foundPrior}`);
                             // Prioritize dimensions that look like initialization times
                             const isInitDim = /init|reftime|reference|run/i.test(dimName);
                             if (!referenceTime || isInitDim || !/init|reftime|reference|run/i.test(refDimName)) {
