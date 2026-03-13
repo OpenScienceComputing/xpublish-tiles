@@ -219,26 +219,21 @@
                 if (isNs) {
                     // Timedelta dimension (lead_time, forecast_period, etc.)
                     const maxH = nsToHours(interval[1]);
-                    const defH = defVal != null ? nsToHours(String(defVal)) : maxH;
                     const step = maxH <= 24 ? 1 : maxH <= 120 ? 3 : 6;
 
-                    let closestDiff = Infinity, defaultVal = null;
-                    for (let h = 0; h <= maxH + 0.001; h += step) {
+                    for (let h = maxH; h >= -0.001; h -= step) {
                         const opt = document.createElement("option");
-                        opt.value = `${h} hours`;
-                        opt.textContent = formatHours(h);
+                        opt.value = `${Math.round(h)} hours`;
+                        opt.textContent = formatHours(Math.round(h));
                         sel.appendChild(opt);
-                        const diff = Math.abs(h - defH);
-                        if (diff < closestDiff) { closestDiff = diff; defaultVal = opt.value; }
                     }
-                    if (defaultVal) sel.value = defaultVal;
+                    if (sel.options.length > 0) sel.selectedIndex = 0;
 
                 } else if (isDatetime) {
                     // Datetime dimension (init_time, time, etc.)
                     const stepH  = parseISO8601ToHours(resolution) || 6;
                     const maxDate = new Date(interval[1] + "Z");
                     const minDate = new Date(interval[0] + "Z");
-                    const defDate = defVal ? new Date(defVal + "Z") : maxDate;
                     const stepMs = stepH * 3600000;
 
                     const options = [];
@@ -256,11 +251,8 @@
                         sel.appendChild(opt);
                     });
 
-                    // Select closest to default
-                    const defIso = defDate.toISOString().slice(0, 16);
-                    for (const opt of sel.options) {
-                        if (opt.value.startsWith(defIso)) { sel.value = opt.value; break; }
-                    }
+                    // Default to the first (latest) option
+                    if (sel.options.length > 0) sel.selectedIndex = 0;
 
                 } else {
                     // Numeric dimension (ensemble_member, level, etc.)
