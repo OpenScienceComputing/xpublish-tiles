@@ -221,14 +221,13 @@
                     const maxH = nsToHours(interval[1]);
                     const step = maxH <= 24 ? 1 : maxH <= 120 ? 3 : 6;
 
-                    for (let h = maxH; h >= -0.001; h -= step) {
+                    for (let h = 0; h <= maxH + 0.001; h += step) {
                         const opt = document.createElement("option");
-                        opt.value = `${Math.round(h)} hours`;
-                        opt.textContent = formatHours(Math.round(h));
+                        const val = Math.round(h);
+                        opt.value = `${val} hours`;
+                        opt.textContent = formatHours(val);
                         sel.appendChild(opt);
                     }
-                    if (sel.options.length > 0) sel.selectedIndex = 0;
-
                 } else if (isDatetime) {
                     // Datetime dimension (init_time, time, etc.)
                     const stepH  = parseISO8601ToHours(resolution) || 6;
@@ -238,7 +237,7 @@
 
                     const options = [];
                     let cur = new Date(maxDate);
-                    while (cur >= minDate && options.length < 60) {
+                    while (cur >= minDate && options.length < 120) {
                         options.push(new Date(cur));
                         cur = new Date(cur.getTime() - stepMs);
                     }
@@ -250,10 +249,6 @@
                         opt.textContent = fmtDatetime(iso);
                         sel.appendChild(opt);
                     });
-
-                    // Default to the first (latest) option
-                    if (sel.options.length > 0) sel.selectedIndex = 0;
-
                 } else {
                     // Numeric dimension (ensemble_member, level, etc.)
                     const minV = parseFloat(interval[0]);
@@ -281,13 +276,59 @@
                 const layer = layersData[varId];
                 if (!layer?.extents) return;
 
+                const now = new Date();
+                const controls = {};
+
+                // Create all selectors first
+                for (const [dimName, extentInfo] of Object.entries(layer.extents)) {
+                    controls[dimName] = buildDimSelect(dimName, extentInfo);
+                }
+
+                // Helper to find closest option
+                const selectClosest = (sel, targetValue, parser = (v) => v) => {
+                    let closestIdx = 0;
+                    let minDiff = Infinity;
+                    for (let i = 0; i < sel.options.length; i++) {
+                        const val = parser(sel.options[i].value);
+                        const diff = Math.abs(val - targetValue);
+                        if (diff < minDiff) {
+                            minDiff = diff;
+                            closestIdx = i;
+                        }
+                    }
+                    sel.selectedIndex = closestIdx;
+                };
+
+                // Find a reference time (prefer latest init_time that isn't in future, or just latest)
+                let referenceTime = null;
+                for (const [dimName, extentInfo] of Object.entries(layer.extents)) {
+                    const isDatetime = typeof extentInfo.interval[0] === "string" && /\d{4}-\d{2}/.test(extentInfo.interval[0]);
+                    if (isDatetime) {
+                        const sel = controls[dimName];
+                        selectClosest(sel, now, (v) => new Date(v + "Z"));
+                        // If multiple datetimes, the last one processed wins as reference (usually OK)
+                        referenceTime = new Date(sel.value + "Z");
+                    }
+                }
+
+                // Handle timedeltas relative to referenceTime
+                for (const [dimName, extentInfo] of Object.entries(layer.extents)) {
+                    const isNs = typeof extentInfo.interval[0] === "string" && extentInfo.interval[0].includes("nanoseconds");
+                    if (isNs) {
+                        const sel = controls[dimName];
+                        const targetHours = referenceTime ? (now - referenceTime) / 3600000 : 0;
+                        selectClosest(sel, targetHours, (v) => parseFloat(v));
+                    }
+                }
+
+                // Append to DOM
                 for (const [dimName, extentInfo] of Object.entries(layer.extents)) {
                     const wrapper = document.createElement("div");
                     const lbl = document.createElement("label");
                     lbl.className = "ctrl-label";
                     lbl.textContent = extentInfo.description || dimName;
                     wrapper.appendChild(lbl);
-                    wrapper.appendChild(buildDimSelect(dimName, extentInfo));
+                    wrapper.appendChild(controls[dimName]);
                     dimControls.appendChild(wrapper);
                 }
             }
