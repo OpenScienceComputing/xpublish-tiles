@@ -1,0 +1,316 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Multi-Model Temperature Explorer</title>
+    <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+    <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 0; font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; }
+        #map-container { flex: 1; position: relative; min-height: 0; }
+        #map { position: absolute; inset: 0; }
+
+        #controls {
+            position: absolute;
+            top: 10px; left: 10px;
+            z-index: 10;
+            background: white;
+            padding: 14px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            width: 280px;
+            font-size: 13px;
+        }
+        #controls h3 { margin: 0 0 8px 0; font-size: 14px; color: #333; }
+        .ctrl-label { display: block; margin-top: 8px; font-size: 11px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
+        #controls select, #controls input[type="number"] {
+            width: 100%; padding: 5px 7px; margin-top: 3px;
+            border: 1px solid #ccc; border-radius: 4px; font-size: 12px;
+        }
+        .range-row { display: flex; gap: 6px; margin-top: 3px; }
+        .range-row input { flex: 1; }
+        .range-row span { line-height: 28px; font-size: 12px; color: #666; }
+        #update-btn {
+            width: 100%; margin-top: 10px; padding: 8px;
+            background: #4a90e2; color: white; border: none;
+            border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600;
+        }
+        #update-btn:hover { background: #357abd; }
+        #map-hint {
+            position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+            z-index: 10; background: rgba(0,0,0,0.6); color: white;
+            padding: 6px 14px; border-radius: 20px; font-size: 12px; pointer-events: none;
+        }
+
+        #chart-panel {
+            height: 0; overflow: hidden; transition: height 0.3s ease;
+            background: #fff; border-top: 1px solid #ddd;
+            display: flex; flex-direction: column;
+        }
+        #chart-panel.open { height: 280px; }
+        #chart-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 6px 14px; background: #f5f5f5; border-bottom: 1px solid #e0e0e0;
+            font-size: 12px; font-weight: 600; color: #444; flex-shrink: 0;
+        }
+        #chart-header button {
+            border: none; background: none; cursor: pointer;
+            font-size: 16px; color: #888; line-height: 1; padding: 0 4px;
+        }
+        #chart-header button:hover { color: #333; }
+        #chart-body { flex: 1; min-height: 0; padding: 8px 14px; position: relative; }
+        #chart-status {
+            position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+            font-size: 13px; color: #888;
+        }
+        #myChart { display: none; width: 100% !important; height: 100% !important; }
+    </style>
+</head>
+<body>
+    <div id="map-container">
+        <div id="map"></div>
+
+        <div id="controls">
+            <h3>🌡 Temperature Explorer</h3>
+            <p style="margin:0 0 6px; font-size:11px; color:#888;">Click map for 7-day multi-model time series</p>
+
+            <label class="ctrl-label">Display Model (map tiles)</label>
+            <select id="model-select">
+                <option value="noaa-gfs-forecast">NOAA GFS Forecast</option>
+                <option value="noaa-hrrr-forecast">NOAA HRRR Forecast</option>
+            </select>
+
+            <label class="ctrl-label">Colormap</label>
+            <select id="colormap-select">
+                <option value="RdBu_r">Red-Blue (diverging)</option>
+                <option value="viridis">Viridis</option>
+                <option value="turbo">Turbo</option>
+                <option value="plasma">Plasma</option>
+            </select>
+
+            <label class="ctrl-label">Color Range (°C)</label>
+            <div class="range-row">
+                <input type="number" id="color-min" value="-40" step="5" />
+                <span>to</span>
+                <input type="number" id="color-max" value="40" step="5" />
+            </div>
+
+            <button id="update-btn">Update Map</button>
+        </div>
+
+        <div id="map-hint">Click anywhere to plot 7-day temperature time series</div>
+    </div>
+
+    <div id="chart-panel">
+        <div id="chart-header">
+            <span id="chart-title">Temperature (°C) — click map to load</span>
+            <button id="close-chart" title="Close">✕</button>
+        </div>
+        <div id="chart-body">
+            <div id="chart-status">Click on the map to fetch data</div>
+            <canvas id="myChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        const BASE_URL = "https://tiles.openscicomp.io";
+        const TMS = "WebMercatorQuad";
+
+        // Models to query for time series
+        const TS_MODELS = [
+            {
+                id: "noaa-gfs-analysis",
+                label: "GFS Analysis",
+                color: "#2196F3",
+                timeDim: "time",
+                extraParams: {},
+                stepHours: 6,
+            },
+            {
+                id: "noaa-hrrr-analysis-v0-2-0",
+                label: "HRRR Analysis",
+                color: "#FF9800",
+                timeDim: "time",
+                extraParams: {},
+                stepHours: 6,
+            },
+            {
+                id: "ecmwf-ifs-ens-forecast",
+                label: "ECMWF ENS (mbr 0)",
+                color: "#4CAF50",
+                timeDim: "init_time",
+                extraParams: { "lead_time": "nearest::0 hours", "ensemble_member": "nearest::0" },
+                stepHours: 6,
+            },
+        ];
+
+        // --- Map setup ---
+        const map = new maplibregl.Map({
+            container: "map",
+            style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+            zoom: 3,
+            center: [-95, 40],
+        });
+        map.addControl(new maplibregl.NavigationControl());
+
+        map.on("load", () => {
+            map.addSource("tiles-source", {
+                type: "raster",
+                tiles: [buildTileUrl()],
+                tileSize: 256,
+            });
+            map.addLayer({ id: "tiles-layer", type: "raster", source: "tiles-source", paint: { "raster-opacity": 0.7 } });
+        });
+
+        function buildTileUrl() {
+            const model = document.getElementById("model-select").value;
+            const cmap  = document.getElementById("colormap-select").value;
+            const cmin  = document.getElementById("color-min").value;
+            const cmax  = document.getElementById("color-max").value;
+            return `${BASE_URL}/datasets/${model}/tiles/${TMS}/{z}/{y}/{x}` +
+                `?variables=temperature_2m&style=raster/${cmap}&width=256&height=256&f=png` +
+                `&colorscalerange=${cmin},${cmax}`;
+        }
+
+        document.getElementById("update-btn").addEventListener("click", () => {
+            const src = map.getSource("tiles-source");
+            if (src) src.setTiles([buildTileUrl()]);
+        });
+
+        // --- Time series fetch ---
+
+        function makeTimestamps(stepHours, daysBack = 7) {
+            const end = new Date();
+            end.setMinutes(0, 0, 0);
+            const start = new Date(end.getTime() - daysBack * 24 * 3600 * 1000);
+            const timestamps = [];
+            for (let t = new Date(start); t <= end; t = new Date(t.getTime() + stepHours * 3600 * 1000)) {
+                timestamps.push(new Date(t));
+            }
+            return timestamps;
+        }
+
+        function isoStr(d) {
+            return d.toISOString().replace(".000Z", "").replace("Z", "");
+        }
+
+        async function fetchPoint(modelCfg, lat, lon, timestamp) {
+            const ts = isoStr(timestamp);
+            const params = new URLSearchParams({
+                variables: "temperature_2m",
+                lat, lon,
+                [modelCfg.timeDim]: `nearest::${ts}`,
+                ...modelCfg.extraParams,
+            });
+            const resp = await fetch(`${BASE_URL}/datasets/${modelCfg.id}/tiles/point?${params}`);
+            const data = await resp.json();
+            return data.value ?? null;
+        }
+
+        async function fetchTimeSeries(modelCfg, lat, lon) {
+            const timestamps = makeTimestamps(modelCfg.stepHours);
+            const values = await Promise.all(
+                timestamps.map(t => fetchPoint(modelCfg, lat, lon, t).catch(() => null))
+            );
+            return {
+                label: modelCfg.label,
+                color: modelCfg.color,
+                data: timestamps.map((t, i) => ({ x: t, y: values[i] })).filter(p => p.y !== null),
+            };
+        }
+
+        // --- Chart ---
+
+        let chartInstance = null;
+
+        function renderChart(seriesList, lat, lon) {
+            const canvas = document.getElementById("myChart");
+            const status = document.getElementById("chart-status");
+            status.style.display = "none";
+            canvas.style.display = "block";
+
+            if (chartInstance) chartInstance.destroy();
+
+            chartInstance = new Chart(canvas, {
+                type: "line",
+                data: {
+                    datasets: seriesList.map(s => ({
+                        label: s.label,
+                        data: s.data,
+                        borderColor: s.color,
+                        backgroundColor: "transparent",
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        tension: 0.3,
+                    })),
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: "index", intersect: false },
+                    plugins: {
+                        legend: { position: "top", labels: { font: { size: 11 }, boxWidth: 20 } },
+                        tooltip: {
+                            callbacks: {
+                                label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(1)}°C`,
+                            },
+                        },
+                    },
+                    scales: {
+                        x: {
+                            type: "time",
+                            time: { unit: "day", displayFormats: { day: "MMM d" } },
+                            ticks: { font: { size: 10 } },
+                        },
+                        y: {
+                            title: { display: true, text: "Temperature (°C)", font: { size: 10 } },
+                            ticks: { font: { size: 10 } },
+                        },
+                    },
+                },
+            });
+        }
+
+        // --- Click handler ---
+
+        let clickMarker = null;
+
+        map.on("click", async (e) => {
+            const { lat, lng: lon } = e.lngLat;
+
+            // Update/place marker
+            if (clickMarker) clickMarker.remove();
+            clickMarker = new maplibregl.Marker({ color: "#e74c3c" })
+                .setLngLat([lon, lat])
+                .addTo(map);
+
+            // Open chart panel and show loading
+            const panel = document.getElementById("chart-panel");
+            panel.classList.add("open");
+            document.getElementById("chart-status").style.display = "flex";
+            document.getElementById("chart-status").textContent = "Fetching data from 3 models…";
+            document.getElementById("myChart").style.display = "none";
+            document.getElementById("chart-title").textContent =
+                `Temperature (°C) — ${lat.toFixed(2)}°N, ${lon.toFixed(2)}°E`;
+
+            try {
+                const seriesList = await Promise.all(
+                    TS_MODELS.map(m => fetchTimeSeries(m, lat.toFixed(4), lon.toFixed(4)))
+                );
+                renderChart(seriesList, lat, lon);
+            } catch (err) {
+                document.getElementById("chart-status").textContent = `Error: ${err.message}`;
+                console.error(err);
+            }
+        });
+
+        document.getElementById("close-chart").addEventListener("click", () => {
+            document.getElementById("chart-panel").classList.remove("open");
+        });
+    </script>
+</body>
+</html>
