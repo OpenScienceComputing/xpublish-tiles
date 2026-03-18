@@ -9,7 +9,6 @@ import xpublish
 from fastapi.middleware.cors import CORSMiddleware
 from xpublish.plugins import load_default_plugins
 
-from xpublish_edr import CfEdrPlugin
 from xpublish_tiles.xpublish.tiles.plugin import TilesPlugin
 from xpublish_tiles.xpublish.wms.plugin import WMSPlugin
 
@@ -73,7 +72,6 @@ rest = xpublish.Rest(
     datasets=datasets,
     plugins={
         **load_default_plugins(),
-        "edr": CfEdrPlugin(),
         "tiles": TilesPlugin(),
         "wms": WMSPlugin(),
     },
