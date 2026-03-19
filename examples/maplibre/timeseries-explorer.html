@@ -86,15 +86,15 @@
 
         <div id="controls">
             <h3>🌡 Temperature Explorer</h3>
-            <p style="margin:0 0 6px; font-size:11px; color:#888;">Click map for 9-day multi-model time series (7-day analysis + 48h forecast)</p>
+            <p style="margin:0 0 6px; font-size:11px; color:#888;">Click map to compare GFS vs HRRR 48h forecast</p>
 
             <label class="ctrl-label">Display Model (map tiles)</label>
             <select id="model-select">
-                <option value="noaa-hrrr-analysis-v0-2-0">NOAA HRRR Analysis</option>
-                <option value="noaa-gfs-analysis-v0-1-0">NOAA GFS Analysis</option>
+                <option value="noaa-hrrr-forecast-48-hour-v0-1-0">NOAA HRRR Forecast</option>
+                <option value="noaa-gfs-forecast-v0-2-7">NOAA GFS Forecast</option>
             </select>
 
-            <label class="ctrl-label">Time</label>
+            <label class="ctrl-label">Forecast Valid Time</label>
             <input type="datetime-local" id="time-select" style="width:100%; padding:5px 7px; margin-top:3px; border:1px solid #ccc; border-radius:4px; font-size:12px;" />
 
             <label class="ctrl-label">Variable</label>
@@ -110,7 +110,7 @@
             <button id="update-btn">Update Map</button>
         </div>
 
-        <div id="map-hint">Click anywhere to plot 9-day temperature time series</div>
+        <div id="map-hint">Click anywhere to compare GFS vs HRRR 48h forecast</div>
 
         <div id="legend">
             <div id="legend-title">2-m Temperature (°C)</div>  <!-- updated by JS -->
@@ -164,25 +164,11 @@
         const GREYS_GRADIENT   = "linear-gradient(to right, #ffffff, #969696, #252525)";
         const GRADIENTS = { viridis: VIRIDIS_GRADIENT, RdBu: RDBU_GRADIENT, Greys: GREYS_GRADIENT };
 
-        // Models to query for time series.
-        // analysisId: dataset for past 7 days (EDR)
-        // forecastId: dataset for next 48h (point loop with init_time + lead_time)
-        // forecastStep: hours between lead_time samples
+        // Models to query for time series — forecast only.
+        // forecastStep: hours between lead_time samples (matches model output frequency)
         const TS_MODELS = [
-            {
-                id: "noaa-gfs-analysis-v0-1-0",
-                forecastId: "noaa-gfs-forecast-v0-2-7",
-                label: "GFS",
-                color: "#2196F3",
-                forecastStep: 3,
-            },
-            {
-                id: "noaa-hrrr-analysis-v0-2-0",
-                forecastId: "noaa-hrrr-forecast-48-hour-v0-1-0",
-                label: "HRRR",
-                color: "#FF9800",
-                forecastStep: 1,
-            },
+            { id: "noaa-gfs-forecast-v0-2-7",             label: "GFS",  color: "#2196F3", forecastStep: 3 },
+            { id: "noaa-hrrr-forecast-48-hour-v0-1-0",    label: "HRRR", color: "#FF9800", forecastStep: 1 },
         ];
 
         // --- Map setup ---
@@ -209,16 +195,27 @@
         }
 
         function buildTileUrl() {
-            const model  = document.getElementById("model-select").value;
-            const varCfg = currentVariable();
-            const cmin   = document.getElementById("color-min").value;
-            const cmax   = document.getElementById("color-max").value;
+            const model   = document.getElementById("model-select").value;
+            const varCfg  = currentVariable();
+            const cmin    = document.getElementById("color-min").value;
+            const cmax    = document.getElementById("color-max").value;
             const timeVal = document.getElementById("time-select").value;
-            let url = `${BASE_URL}/datasets/${model}/tiles/${TMS}/{z}/{y}/{x}` +
+
+            const now = new Date();
+            now.setMinutes(0, 0, 0, 0);
+            const initTimeStr = isoStr(now);
+
+            let leadHours = 0;
+            if (timeVal) {
+                const selected = new Date(timeVal);
+                leadHours = Math.max(0, Math.round((selected - now) / 3600000));
+            }
+
+            return `${BASE_URL}/datasets/${model}/tiles/${TMS}/{z}/{y}/{x}` +
                 `?variables=${varCfg.id}&style=raster/${varCfg.colormap}&width=256&height=256&f=png` +
-                `&colorscalerange=${cmin},${cmax}`;
-            if (timeVal) url += `&time=nearest::${timeVal.replace("T", "T")}:00`;
-            return url;
+                `&colorscalerange=${cmin},${cmax}` +
+                `&init_time=nearest::${initTimeStr}` +
+                `&lead_time=nearest::${leadHours} hours`;
         }
 
         // Initialize time input to current time rounded to last hour
@@ -272,30 +269,6 @@
             return d.toISOString().replace(".000Z", "").replace("Z", "");
         }
 
-        function dateRange(daysBack = 7) {
-            const end = new Date();
-            end.setMinutes(0, 0, 0);
-            const start = new Date(end.getTime() - daysBack * 24 * 3600 * 1000);
-            return { start, end };
-        }
-
-        async function fetchViaEdr(modelCfg, lat, lon) {
-            const varCfg = currentVariable();
-            const { start, end } = dateRange();
-            const params = new URLSearchParams({
-                coords: `POINT(${lon} ${lat})`,
-                "parameter-name": varCfg.id,
-                datetime: `${isoStr(start)}/${isoStr(end)}`,
-            });
-            const resp = await fetch(`${BASE_URL}/datasets/${modelCfg.id}/edr/position?${params}`);
-            const data = await resp.json();
-            const times = data.domain.axes.t.values;
-            const values = data.ranges[varCfg.id].values;
-            return times
-                .map((t, i) => ({ x: new Date(t + "Z"), y: values[i] }))
-                .filter(p => p.y !== null);
-        }
-
         async function fetchForecast(modelCfg, lat, lon) {
             const varCfg = currentVariable();
             const now = new Date();
@@ -303,7 +276,7 @@
             const initTimeStr = isoStr(now);
 
             const fetchLead = async (h) => {
-                const url = new URL(`${BASE_URL}/datasets/${modelCfg.forecastId}/tiles/point`);
+                const url = new URL(`${BASE_URL}/datasets/${modelCfg.id}/tiles/point`);
                 url.searchParams.set("variables", varCfg.id);
                 url.searchParams.set("lat", lat);
                 url.searchParams.set("lon", lon);
@@ -323,20 +296,8 @@
         }
 
         async function fetchTimeSeries(modelCfg, lat, lon) {
-            const now = new Date();
-            now.setMinutes(0, 0, 0, 0);
-
-            const [analysisData, forecastData] = await Promise.all([
-                fetchViaEdr(modelCfg, lat, lon),
-                fetchForecast(modelCfg, lat, lon).catch(() => []),
-            ]);
-
-            return {
-                label: modelCfg.label,
-                color: modelCfg.color,
-                forecastStart: now,
-                data: [...analysisData, ...forecastData],
-            };
+            const data = await fetchForecast(modelCfg, lat, lon);
+            return { label: modelCfg.label, color: modelCfg.color, data };
         }
 
         // --- Chart ---
@@ -354,18 +315,21 @@
             chartInstance = new Chart(canvas, {
                 type: "line",
                 data: {
-                    datasets: seriesList.map(s => ({
-                        label: s.label,
-                        data: s.data,
-                        borderColor: s.color,
-                        backgroundColor: "transparent",
-                        borderWidth: 2,
-                        pointRadius: 0,
-                        tension: 0.3,
-                        segment: s.forecastStart ? {
-                            borderDash: ctx => ctx.p0.parsed.x >= s.forecastStart.getTime() ? [6, 4] : undefined,
-                        } : undefined,
-                    })),
+                    datasets: seriesList.map(s => {
+                        const now = Date.now();
+                        return {
+                            label: s.label,
+                            data: s.data,
+                            borderColor: s.color,
+                            backgroundColor: "transparent",
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            tension: 0.3,
+                            segment: {
+                                borderDash: ctx => ctx.p0.parsed.x >= now ? [6, 4] : undefined,
+                            },
+                        };
+                    }),
                 },
                 options: {
                     responsive: true,
@@ -419,7 +383,7 @@
             const panel = document.getElementById("chart-panel");
             panel.classList.add("open");
             document.getElementById("chart-status").style.display = "flex";
-            document.getElementById("chart-status").textContent = "Fetching data (7-day analysis + 48h forecast)…";
+            document.getElementById("chart-status").textContent = "Fetching 48h forecast from GFS and HRRR…";
             document.getElementById("myChart").style.display = "none";
             document.getElementById("chart-title").textContent =
                 `${currentVariable().label} — ${lat.toFixed(2)}°N, ${lon.toFixed(2)}°E`;
