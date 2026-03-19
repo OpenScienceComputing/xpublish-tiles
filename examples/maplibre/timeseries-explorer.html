@@ -128,15 +128,6 @@
                 color: "#FF9800",
                 useEdr: true,
             },
-            {
-                id: "ecmwf-ifs-ens-forecast-15-day-0-25-degree-v0-1-0",
-                label: "ECMWF ENS (mbr 0)",
-                color: "#4CAF50",
-                useEdr: false,
-                timeDim: "init_time",
-                extraParams: { "lead_time": "nearest::0 hours", "ensemble_member": "nearest::0" },
-                stepHours: 6,
-            },
         ];
 
         // --- Map setup ---
@@ -202,34 +193,8 @@
             };
         }
 
-        async function fetchViaPointLoop(modelCfg, lat, lon) {
-            const { start, end } = dateRange();
-            const timestamps = [];
-            for (let t = new Date(start); t <= end; t = new Date(t.getTime() + modelCfg.stepHours * 3600 * 1000)) {
-                timestamps.push(new Date(t));
-            }
-            const values = await Promise.all(timestamps.map(async t => {
-                const ts = isoStr(t);
-                const params = new URLSearchParams({
-                    variables: "temperature_2m", lat, lon,
-                    [modelCfg.timeDim]: `nearest::${ts}`,
-                    ...modelCfg.extraParams,
-                });
-                const resp = await fetch(`${BASE_URL}/datasets/${modelCfg.id}/tiles/point?${params}`);
-                const data = await resp.json();
-                return data.value ?? null;
-            }));
-            return {
-                label: modelCfg.label,
-                color: modelCfg.color,
-                data: timestamps.map((t, i) => ({ x: t, y: values[i] })).filter(p => p.y !== null),
-            };
-        }
-
         async function fetchTimeSeries(modelCfg, lat, lon) {
-            return modelCfg.useEdr
-                ? fetchViaEdr(modelCfg, lat, lon)
-                : fetchViaPointLoop(modelCfg, lat, lon);
+            return fetchViaEdr(modelCfg, lat, lon);
         }
 
         // --- Chart ---
