@@ -90,8 +90,8 @@
 
             <label class="ctrl-label">Display Model (map tiles)</label>
             <select id="model-select">
-                <option value="noaa-gfs-forecast-v0-2-7">NOAA GFS Forecast</option>
                 <option value="noaa-hrrr-forecast-48-hour-v0-1-0">NOAA HRRR Forecast</option>
+                <option value="noaa-gfs-forecast-v0-2-7">NOAA GFS Forecast</option>
             </select>
 
             <label class="ctrl-label">Color Range (°C)</label>
@@ -181,11 +181,14 @@
             document.getElementById("legend-max").textContent = document.getElementById("color-max").value + "°C";
         }
 
-        document.getElementById("update-btn").addEventListener("click", () => {
+        function refreshMap() {
             const src = map.getSource("tiles-source");
             if (src) src.setTiles([buildTileUrl()]);
             updateLegend();
-        });
+        }
+
+        document.getElementById("model-select").addEventListener("change", refreshMap);
+        document.getElementById("update-btn").addEventListener("click", refreshMap);
 
         // --- Time series fetch ---
 
