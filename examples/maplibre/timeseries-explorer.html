@@ -166,9 +166,10 @@
 
         // Models to query for time series — forecast only.
         // forecastStep: hours between lead_time samples (matches model output frequency)
+        // maxLeadHours: how far out to fetch (GFS runs ~10 days, HRRR limited to 48h)
         const TS_MODELS = [
-            { id: "noaa-gfs-forecast-v0-2-7",             label: "GFS",  color: "#2196F3", forecastStep: 3 },
-            { id: "noaa-hrrr-forecast-48-hour-v0-1-0",    label: "HRRR", color: "#FF9800", forecastStep: 1 },
+            { id: "noaa-gfs-forecast-v0-2-7",             label: "GFS",  color: "#2196F3", forecastStep: 6,  maxLeadHours: 216 },
+            { id: "noaa-hrrr-forecast-48-hour-v0-1-0",    label: "HRRR", color: "#FF9800", forecastStep: 1,  maxLeadHours: 48  },
         ];
 
         // --- Map setup ---
@@ -288,7 +289,7 @@
             };
 
             const promises = [];
-            for (let h = 0; h <= 48; h += modelCfg.forecastStep) {
+            for (let h = 0; h <= modelCfg.maxLeadHours; h += modelCfg.forecastStep) {
                 promises.push(fetchLead(h));
             }
             const points = await Promise.all(promises);
