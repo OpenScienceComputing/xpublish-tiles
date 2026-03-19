@@ -45,6 +45,16 @@
             z-index: 10; background: rgba(0,0,0,0.6); color: white;
             padding: 6px 14px; border-radius: 20px; font-size: 12px; pointer-events: none;
         }
+        #legend {
+            position: absolute; bottom: 10px; right: 10px;
+            z-index: 10; background: white;
+            padding: 8px 12px; border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            min-width: 180px; font-size: 11px;
+        }
+        #legend-title { font-weight: 700; color: #444; margin-bottom: 5px; }
+        #legend-bar { height: 12px; border-radius: 3px; background: linear-gradient(to right, #440154, #414487, #2a788e, #22a884, #7ad151, #fde725); }
+        #legend-labels { display: flex; justify-content: space-between; color: #666; margin-top: 3px; }
 
         #chart-panel {
             height: 0; overflow: hidden; transition: height 0.3s ease;
@@ -95,6 +105,15 @@
         </div>
 
         <div id="map-hint">Click anywhere to plot 7-day temperature time series</div>
+
+        <div id="legend">
+            <div id="legend-title">2-m Temperature (°C)</div>
+            <div id="legend-bar"></div>
+            <div id="legend-labels">
+                <span id="legend-min">-40</span>
+                <span id="legend-max">40</span>
+            </div>
+        </div>
     </div>
 
     <div id="chart-panel">
@@ -157,9 +176,15 @@
                 `&colorscalerange=${cmin},${cmax}`;
         }
 
+        function updateLegend() {
+            document.getElementById("legend-min").textContent = document.getElementById("color-min").value + "°C";
+            document.getElementById("legend-max").textContent = document.getElementById("color-max").value + "°C";
+        }
+
         document.getElementById("update-btn").addEventListener("click", () => {
             const src = map.getSource("tiles-source");
             if (src) src.setTiles([buildTileUrl()]);
+            updateLegend();
         });
 
         // --- Time series fetch ---
