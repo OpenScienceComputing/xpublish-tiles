@@ -90,9 +90,12 @@
 
             <label class="ctrl-label">Display Model (map tiles)</label>
             <select id="model-select">
-                <option value="noaa-hrrr-forecast-48-hour-v0-1-0">NOAA HRRR Forecast</option>
-                <option value="noaa-gfs-forecast-v0-2-7">NOAA GFS Forecast</option>
+                <option value="noaa-hrrr-analysis-v0-2-0">NOAA HRRR Analysis</option>
+                <option value="noaa-gfs-analysis-v0-1-0">NOAA GFS Analysis</option>
             </select>
+
+            <label class="ctrl-label">Time</label>
+            <input type="datetime-local" id="time-select" style="width:100%; padding:5px 7px; margin-top:3px; border:1px solid #ccc; border-radius:4px; font-size:12px;" />
 
             <label class="ctrl-label">Variable</label>
             <select id="variable-select"></select>
@@ -203,14 +206,25 @@
         }
 
         function buildTileUrl() {
-            const model = document.getElementById("model-select").value;
+            const model  = document.getElementById("model-select").value;
             const varCfg = currentVariable();
-            const cmin  = document.getElementById("color-min").value;
-            const cmax  = document.getElementById("color-max").value;
-            return `${BASE_URL}/datasets/${model}/tiles/${TMS}/{z}/{y}/{x}` +
+            const cmin   = document.getElementById("color-min").value;
+            const cmax   = document.getElementById("color-max").value;
+            const timeVal = document.getElementById("time-select").value;
+            let url = `${BASE_URL}/datasets/${model}/tiles/${TMS}/{z}/{y}/{x}` +
                 `?variables=${varCfg.id}&style=raster/${varCfg.colormap}&width=256&height=256&f=png` +
                 `&colorscalerange=${cmin},${cmax}`;
+            if (timeVal) url += `&time=nearest::${timeVal.replace("T", "T")}:00`;
+            return url;
         }
+
+        // Initialize time input to current time rounded to last hour
+        (function initTimeInput() {
+            const now = new Date();
+            now.setMinutes(0, 0, 0);
+            const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
+            document.getElementById("time-select").value = local.toISOString().slice(0, 16);
+        })();
 
         function updateLegend() {
             const varCfg = currentVariable();
@@ -246,6 +260,7 @@
 
         document.getElementById("model-select").addEventListener("change", refreshMap);
         document.getElementById("variable-select").addEventListener("change", onVariableChange);
+        document.getElementById("time-select").addEventListener("change", refreshMap);
         document.getElementById("update-btn").addEventListener("click", refreshMap);
 
         // --- Time series fetch ---
@@ -313,6 +328,14 @@
                     responsive: true,
                     maintainAspectRatio: false,
                     interaction: { mode: "index", intersect: false },
+                    onClick: (evt, elements) => {
+                        if (!elements.length) return;
+                        const pt = elements[0];
+                        const t = chartInstance.data.datasets[pt.datasetIndex].data[pt.index].x;
+                        const local = new Date(t.getTime() - t.getTimezoneOffset() * 60000);
+                        document.getElementById("time-select").value = local.toISOString().slice(0, 16);
+                        refreshMap();
+                    },
                     plugins: {
                         legend: { position: "top", labels: { font: { size: 11 }, boxWidth: 20 } },
                         tooltip: {
