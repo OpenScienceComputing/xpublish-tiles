@@ -165,11 +165,11 @@
         const GRADIENTS = { viridis: VIRIDIS_GRADIENT, RdBu: RDBU_GRADIENT, Greys: GREYS_GRADIENT };
 
         // Models to query for time series — forecast only.
-        // forecastStep: hours between lead_time samples (matches model output frequency)
-        // maxLeadHours: how far out to fetch (GFS runs ~10 days, HRRR limited to 48h)
+        // Past 7 days: sample at init_time=nearest::VALID_TIME, lead_time=nearest::0 hours (6h step)
+        // Future 48h:  sample at init_time=nearest::NOW, lead_time=nearest::N hours (futureStep)
         const TS_MODELS = [
-            { id: "noaa-gfs-forecast-v0-2-7",             label: "GFS",  color: "#2196F3", forecastStep: 6,  maxLeadHours: 216 },
-            { id: "noaa-hrrr-forecast-48-hour-v0-1-0",    label: "HRRR", color: "#FF9800", forecastStep: 1,  maxLeadHours: 48  },
+            { id: "noaa-gfs-forecast-v0-2-7",             label: "GFS",  color: "#2196F3", futureStep: 6 },
+            { id: "noaa-hrrr-forecast-48-hour-v0-1-0",    label: "HRRR", color: "#FF9800", futureStep: 1 },
         ];
 
         // --- Map setup ---
@@ -274,24 +274,39 @@
             const varCfg = currentVariable();
             const now = new Date();
             now.setMinutes(0, 0, 0, 0);
-            const initTimeStr = isoStr(now);
+            const nowStr = isoStr(now);
 
-            const fetchLead = async (h) => {
+            const fetchPoint = async (validTime) => {
                 const url = new URL(`${BASE_URL}/datasets/${modelCfg.id}/tiles/point`);
                 url.searchParams.set("variables", varCfg.id);
                 url.searchParams.set("lat", lat);
                 url.searchParams.set("lon", lon);
-                url.searchParams.set("init_time", `nearest::${initTimeStr}`);
-                url.searchParams.set("lead_time", `nearest::${h} hours`);
+                if (validTime <= now) {
+                    // Past: find the forecast run initialized nearest this valid time, at lead_time 0
+                    url.searchParams.set("init_time", `nearest::${isoStr(validTime)}`);
+                    url.searchParams.set("lead_time", "nearest::0 hours");
+                } else {
+                    // Future: use the latest init run and step forward by lead_time
+                    const leadHours = Math.round((validTime - now) / 3600000);
+                    url.searchParams.set("init_time", `nearest::${nowStr}`);
+                    url.searchParams.set("lead_time", `nearest::${leadHours} hours`);
+                }
                 const resp = await fetch(url);
                 const data = await resp.json();
-                return { x: new Date(now.getTime() + h * 3600 * 1000), y: data.value ?? null };
+                return { x: validTime, y: data.value ?? null };
             };
 
+            const pastStepMs   = 6 * 3600 * 1000;
+            const futureStepMs = modelCfg.futureStep * 3600 * 1000;
+            const pastStart    = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
+            const futureEnd    = new Date(now.getTime() + 48 * 3600 * 1000);
+
             const promises = [];
-            for (let h = 0; h <= modelCfg.maxLeadHours; h += modelCfg.forecastStep) {
-                promises.push(fetchLead(h));
-            }
+            for (let t = pastStart.getTime(); t <= now.getTime(); t += pastStepMs)
+                promises.push(fetchPoint(new Date(t)));
+            for (let t = now.getTime() + futureStepMs; t <= futureEnd.getTime(); t += futureStepMs)
+                promises.push(fetchPoint(new Date(t)));
+
             const points = await Promise.all(promises);
             return points.filter(p => p.y !== null);
         }
