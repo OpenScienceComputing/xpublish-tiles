@@ -94,7 +94,10 @@
                 <option value="noaa-gfs-forecast-v0-2-7">NOAA GFS Forecast</option>
             </select>
 
-            <label class="ctrl-label">Color Range (°C)</label>
+            <label class="ctrl-label">Variable</label>
+            <select id="variable-select"></select>
+
+            <label class="ctrl-label">Color Range</label>
             <div class="range-row">
                 <input type="number" id="color-min" value="-40" step="5" />
                 <span>to</span>
@@ -107,7 +110,7 @@
         <div id="map-hint">Click anywhere to plot 7-day temperature time series</div>
 
         <div id="legend">
-            <div id="legend-title">2-m Temperature (°C)</div>
+            <div id="legend-title">2-m Temperature (°C)</div>  <!-- updated by JS -->
             <div id="legend-bar"></div>
             <div id="legend-labels">
                 <span id="legend-min">-40</span>
@@ -130,6 +133,33 @@
     <script>
         const BASE_URL = "https://tiles.openscicomp.io";
         const TMS = "WebMercatorQuad";
+
+        // Variables common to both GFS and HRRR
+        const VARIABLES = [
+            { id: "temperature_2m",                          label: "2-m Temperature",              units: "°C",   colormap: "viridis",  range: [-40, 40]     },
+            { id: "dew_point_temperature_2m",                label: "2-m Dew Point",                units: "°C",   colormap: "viridis",  range: [-40, 25]     },
+            { id: "relative_humidity_2m",                    label: "2-m Relative Humidity",        units: "%",    colormap: "viridis",  range: [0, 100]      },
+            { id: "pressure_reduced_to_mean_sea_level",      label: "Mean Sea Level Pressure",      units: "Pa",   colormap: "viridis",  range: [97000, 104000] },
+            { id: "pressure_surface",                        label: "Surface Pressure",             units: "Pa",   colormap: "viridis",  range: [85000, 105000] },
+            { id: "wind_u_10m",                              label: "10-m Wind U",                  units: "m/s",  colormap: "RdBu",     range: [-30, 30]     },
+            { id: "wind_v_10m",                              label: "10-m Wind V",                  units: "m/s",  colormap: "RdBu",     range: [-30, 30]     },
+            { id: "precipitation_surface",                   label: "Precipitation",                units: "kg/m²",colormap: "viridis",  range: [0, 50]       },
+            { id: "precipitable_water_atmosphere",           label: "Precipitable Water",           units: "kg/m²",colormap: "viridis",  range: [0, 70]       },
+            { id: "total_cloud_cover_atmosphere",            label: "Total Cloud Cover",            units: "%",    colormap: "Greys",    range: [0, 100]      },
+            { id: "downward_short_wave_radiation_flux_surface", label: "Downward SW Radiation",     units: "W/m²", colormap: "viridis",  range: [0, 1000]     },
+            { id: "downward_long_wave_radiation_flux_surface",  label: "Downward LW Radiation",     units: "W/m²", colormap: "viridis",  range: [150, 450]    },
+            { id: "geopotential_height_cloud_ceiling",       label: "Cloud Ceiling Height",         units: "m",    colormap: "viridis",  range: [0, 3000]     },
+            { id: "percent_frozen_precipitation_surface",    label: "Frozen Precip Fraction",       units: "%",    colormap: "viridis",  range: [0, 100]      },
+            { id: "categorical_rain_surface",                label: "Categorical Rain",             units: "",     colormap: "viridis",  range: [0, 1]        },
+            { id: "categorical_snow_surface",                label: "Categorical Snow",             units: "",     colormap: "viridis",  range: [0, 1]        },
+            { id: "categorical_freezing_rain_surface",       label: "Categorical Freezing Rain",    units: "",     colormap: "viridis",  range: [0, 1]        },
+            { id: "categorical_ice_pellets_surface",         label: "Categorical Ice Pellets",      units: "",     colormap: "viridis",  range: [0, 1]        },
+        ];
+
+        const VIRIDIS_GRADIENT = "linear-gradient(to right, #440154, #414487, #2a788e, #22a884, #7ad151, #fde725)";
+        const RDBU_GRADIENT    = "linear-gradient(to right, #053061, #2166ac, #d1e5f0, #f7f7f7, #fddbc7, #d6604d, #67001f)";
+        const GREYS_GRADIENT   = "linear-gradient(to right, #ffffff, #969696, #252525)";
+        const GRADIENTS = { viridis: VIRIDIS_GRADIENT, RdBu: RDBU_GRADIENT, Greys: GREYS_GRADIENT };
 
         // Models to query for time series
         // useEdr: true  → single EDR /position request (efficient, works for simple time dim)
@@ -167,18 +197,36 @@
             map.addLayer({ id: "tiles-layer", type: "raster", source: "tiles-source", paint: { "raster-opacity": 0.7 } });
         });
 
+        function currentVariable() {
+            const id = document.getElementById("variable-select").value;
+            return VARIABLES.find(v => v.id === id) || VARIABLES[0];
+        }
+
         function buildTileUrl() {
             const model = document.getElementById("model-select").value;
+            const varCfg = currentVariable();
             const cmin  = document.getElementById("color-min").value;
             const cmax  = document.getElementById("color-max").value;
             return `${BASE_URL}/datasets/${model}/tiles/${TMS}/{z}/{y}/{x}` +
-                `?variables=temperature_2m&style=raster/viridis&width=256&height=256&f=png` +
+                `?variables=${varCfg.id}&style=raster/${varCfg.colormap}&width=256&height=256&f=png` +
                 `&colorscalerange=${cmin},${cmax}`;
         }
 
         function updateLegend() {
-            document.getElementById("legend-min").textContent = document.getElementById("color-min").value + "°C";
-            document.getElementById("legend-max").textContent = document.getElementById("color-max").value + "°C";
+            const varCfg = currentVariable();
+            const cmin = document.getElementById("color-min").value;
+            const cmax = document.getElementById("color-max").value;
+            document.getElementById("legend-title").textContent = `${varCfg.label}${varCfg.units ? " (" + varCfg.units + ")" : ""}`;
+            document.getElementById("legend-bar").style.background = GRADIENTS[varCfg.colormap] || VIRIDIS_GRADIENT;
+            document.getElementById("legend-min").textContent = cmin;
+            document.getElementById("legend-max").textContent = cmax;
+        }
+
+        function onVariableChange() {
+            const varCfg = currentVariable();
+            document.getElementById("color-min").value = varCfg.range[0];
+            document.getElementById("color-max").value = varCfg.range[1];
+            refreshMap();
         }
 
         function refreshMap() {
@@ -187,7 +235,17 @@
             updateLegend();
         }
 
+        // Populate variable selector
+        const varSelect = document.getElementById("variable-select");
+        VARIABLES.forEach(v => {
+            const opt = document.createElement("option");
+            opt.value = v.id;
+            opt.textContent = v.label;
+            varSelect.appendChild(opt);
+        });
+
         document.getElementById("model-select").addEventListener("change", refreshMap);
+        document.getElementById("variable-select").addEventListener("change", onVariableChange);
         document.getElementById("update-btn").addEventListener("click", refreshMap);
 
         // --- Time series fetch ---
@@ -204,16 +262,17 @@
         }
 
         async function fetchViaEdr(modelCfg, lat, lon) {
+            const varCfg = currentVariable();
             const { start, end } = dateRange();
             const params = new URLSearchParams({
                 coords: `POINT(${lon} ${lat})`,
-                "parameter-name": "temperature_2m",
+                "parameter-name": varCfg.id,
                 datetime: `${isoStr(start)}/${isoStr(end)}`,
             });
             const resp = await fetch(`${BASE_URL}/datasets/${modelCfg.id}/edr/position?${params}`);
             const data = await resp.json();
             const times = data.domain.axes.t.values;
-            const values = data.ranges.temperature_2m.values;
+            const values = data.ranges[varCfg.id].values;
             return {
                 label: modelCfg.label,
                 color: modelCfg.color,
@@ -269,7 +328,7 @@
                             ticks: { font: { size: 10 } },
                         },
                         y: {
-                            title: { display: true, text: "Temperature (°C)", font: { size: 10 } },
+                            title: { display: true, text: `${currentVariable().label}${currentVariable().units ? " (" + currentVariable().units + ")" : ""}`, font: { size: 10 } },
                             ticks: { font: { size: 10 } },
                         },
                     },
@@ -297,7 +356,7 @@
             document.getElementById("chart-status").textContent = "Fetching data from 3 models…";
             document.getElementById("myChart").style.display = "none";
             document.getElementById("chart-title").textContent =
-                `Temperature (°C) — ${lat.toFixed(2)}°N, ${lon.toFixed(2)}°E`;
+                `${currentVariable().label} — ${lat.toFixed(2)}°N, ${lon.toFixed(2)}°E`;
 
             try {
                 const seriesList = await Promise.all(
