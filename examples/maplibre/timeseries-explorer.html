@@ -80,8 +80,8 @@
 
             <label class="ctrl-label">Display Model (map tiles)</label>
             <select id="model-select">
-                <option value="noaa-gfs-forecast">NOAA GFS Forecast</option>
-                <option value="noaa-hrrr-forecast">NOAA HRRR Forecast</option>
+                <option value="noaa-gfs-forecast-v0-2-7">NOAA GFS Forecast</option>
+                <option value="noaa-hrrr-forecast-48-hour-v0-1-0">NOAA HRRR Forecast</option>
             </select>
 
             <label class="ctrl-label">Color Range (°C)</label>
@@ -113,27 +113,26 @@
         const TMS = "WebMercatorQuad";
 
         // Models to query for time series
+        // useEdr: true  → single EDR /position request (efficient, works for simple time dim)
+        // useEdr: false → one /tiles/point request per timestamp (fallback for multi-dim datasets)
         const TS_MODELS = [
             {
-                id: "noaa-gfs-analysis",
+                id: "noaa-gfs-analysis-v0-1-0",
                 label: "GFS Analysis",
                 color: "#2196F3",
-                timeDim: "time",
-                extraParams: {},
-                stepHours: 6,
+                useEdr: true,
             },
             {
                 id: "noaa-hrrr-analysis-v0-2-0",
                 label: "HRRR Analysis",
                 color: "#FF9800",
-                timeDim: "time",
-                extraParams: {},
-                stepHours: 6,
+                useEdr: true,
             },
             {
-                id: "ecmwf-ifs-ens-forecast",
+                id: "ecmwf-ifs-ens-forecast-15-day-0-25-degree-v0-1-0",
                 label: "ECMWF ENS (mbr 0)",
                 color: "#4CAF50",
+                useEdr: false,
                 timeDim: "init_time",
                 extraParams: { "lead_time": "nearest::0 hours", "ensemble_member": "nearest::0" },
                 stepHours: 6,
@@ -174,44 +173,63 @@
 
         // --- Time series fetch ---
 
-        function makeTimestamps(stepHours, daysBack = 7) {
-            const end = new Date();
-            end.setMinutes(0, 0, 0);
-            const start = new Date(end.getTime() - daysBack * 24 * 3600 * 1000);
-            const timestamps = [];
-            for (let t = new Date(start); t <= end; t = new Date(t.getTime() + stepHours * 3600 * 1000)) {
-                timestamps.push(new Date(t));
-            }
-            return timestamps;
-        }
-
         function isoStr(d) {
             return d.toISOString().replace(".000Z", "").replace("Z", "");
         }
 
-        async function fetchPoint(modelCfg, lat, lon, timestamp) {
-            const ts = isoStr(timestamp);
-            const params = new URLSearchParams({
-                variables: "temperature_2m",
-                lat, lon,
-                [modelCfg.timeDim]: `nearest::${ts}`,
-                ...modelCfg.extraParams,
-            });
-            const resp = await fetch(`${BASE_URL}/datasets/${modelCfg.id}/tiles/point?${params}`);
-            const data = await resp.json();
-            return data.value ?? null;
+        function dateRange(daysBack = 7) {
+            const end = new Date();
+            end.setMinutes(0, 0, 0);
+            const start = new Date(end.getTime() - daysBack * 24 * 3600 * 1000);
+            return { start, end };
         }
 
-        async function fetchTimeSeries(modelCfg, lat, lon) {
-            const timestamps = makeTimestamps(modelCfg.stepHours);
-            const values = await Promise.all(
-                timestamps.map(t => fetchPoint(modelCfg, lat, lon, t).catch(() => null))
-            );
+        async function fetchViaEdr(modelCfg, lat, lon) {
+            const { start, end } = dateRange();
+            const params = new URLSearchParams({
+                coords: `POINT(${lon} ${lat})`,
+                "parameter-name": "temperature_2m",
+                datetime: `${isoStr(start)}/${isoStr(end)}`,
+            });
+            const resp = await fetch(`${BASE_URL}/datasets/${modelCfg.id}/edr/position?${params}`);
+            const data = await resp.json();
+            const times = data.domain.axes.t.values;
+            const values = data.ranges.temperature_2m.values;
+            return {
+                label: modelCfg.label,
+                color: modelCfg.color,
+                data: times.map((t, i) => ({ x: new Date(t + "Z"), y: values[i] })).filter(p => p.y !== null),
+            };
+        }
+
+        async function fetchViaPointLoop(modelCfg, lat, lon) {
+            const { start, end } = dateRange();
+            const timestamps = [];
+            for (let t = new Date(start); t <= end; t = new Date(t.getTime() + modelCfg.stepHours * 3600 * 1000)) {
+                timestamps.push(new Date(t));
+            }
+            const values = await Promise.all(timestamps.map(async t => {
+                const ts = isoStr(t);
+                const params = new URLSearchParams({
+                    variables: "temperature_2m", lat, lon,
+                    [modelCfg.timeDim]: `nearest::${ts}`,
+                    ...modelCfg.extraParams,
+                });
+                const resp = await fetch(`${BASE_URL}/datasets/${modelCfg.id}/tiles/point?${params}`);
+                const data = await resp.json();
+                return data.value ?? null;
+            }));
             return {
                 label: modelCfg.label,
                 color: modelCfg.color,
                 data: timestamps.map((t, i) => ({ x: t, y: values[i] })).filter(p => p.y !== null),
             };
+        }
+
+        async function fetchTimeSeries(modelCfg, lat, lon) {
+            return modelCfg.useEdr
+                ? fetchViaEdr(modelCfg, lat, lon)
+                : fetchViaPointLoop(modelCfg, lat, lon);
         }
 
         // --- Chart ---
