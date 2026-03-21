@@ -58,6 +58,17 @@
         #legend-title { font-size: 12px; font-weight: 600; color: #333; margin-bottom: 6px; }
         #legend-bar { height: 14px; border-radius: 3px; }
         #legend-labels { display: flex; justify-content: space-between; font-size: 11px; color: #555; margin-top: 3px; }
+        #map-title {
+            position: absolute;
+            bottom: 30px; right: 10px;
+            z-index: 1; background: rgba(255,255,255,0.92);
+            padding: 8px 14px; border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            font-size: 13px; color: #333; max-width: 340px;
+            display: none;
+        }
+        #map-title .title-var { font-weight: 700; }
+        #map-title .title-time { color: #555; font-size: 12px; margin-top: 2px; }
     </style>
 </head>
 <body>
@@ -99,6 +110,11 @@
 
         <button id="update-btn" disabled>Update Map</button>
         <div id="status"></div>
+    </div>
+
+    <div id="map-title">
+        <div class="title-var"></div>
+        <div class="title-time"></div>
     </div>
 
     <div id="legend">
@@ -187,7 +203,7 @@
             zoom: 2, center: [-30, 30],
         });
         map.addControl(new maplibregl.NavigationControl());
-        map.on('load', () => { mapReady = true; });
+        map.on('load', () => { mapReady = true; if (dataReady) applyLayer(); });
 
         opacitySlider.addEventListener('input', () => {
             opacityValue.textContent = `${opacitySlider.value}%`;
@@ -450,6 +466,43 @@
             document.getElementById('legend').style.display = 'block';
         }
 
+        function updateMapTitle() {
+            const titleEl = document.getElementById('map-title');
+            if (!currentItemMeta) { titleEl.style.display = 'none'; return; }
+            const varId   = variableSelect.value;
+            const varInfo = currentItemMeta.variables[varId];
+            const varLabel = varInfo?.description || varId;
+            const unit     = varInfo?.unit && varInfo.unit !== 'not set' ? ` (${varInfo.unit})` : '';
+
+            // Find datetime and lead_time dims from current controls
+            let initTime = null, leadHours = null, validTime = null;
+            dimControls.querySelectorAll('select').forEach(sel => {
+                const dimName = sel.id.replace('dim-', '');
+                const dimInfo = currentItemMeta.dimensions[dimName];
+                const val = sel.options[sel.selectedIndex]?.value;
+                if (!val || !dimInfo) return;
+                if (dimInfo.type === 'temporal') {
+                    initTime = parseDateSafe(val);
+                } else if (dimInfo.unit === 'hours') {
+                    leadHours = parseFloat(val);
+                }
+            });
+
+            let timeStr = '';
+            if (initTime && leadHours != null) {
+                validTime = new Date(initTime.getTime() + leadHours * 3600000);
+                const initStr  = fmtDatetime(initTime.toISOString());
+                const validStr = fmtDatetime(validTime.toISOString());
+                timeStr = `Init: ${initStr} UTC  +${formatHours(leadHours)}  →  Valid: ${validStr} UTC`;
+            } else if (initTime) {
+                timeStr = fmtDatetime(initTime.toISOString()) + ' UTC';
+            }
+
+            titleEl.querySelector('.title-var').textContent  = varLabel + unit;
+            titleEl.querySelector('.title-time').textContent = timeStr;
+            titleEl.style.display = 'block';
+        }
+
         // --- ZarrLayer management ---
 
         async function applyLayer() {
@@ -491,6 +544,7 @@
                 }
 
                 updateLegend();
+                updateMapTitle();
                 setStatus('');
             } catch (err) {
                 console.error(err);
