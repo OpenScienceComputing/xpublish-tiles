@@ -1,0 +1,205 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>GFS Forecast — Direct Zarr/Icechunk</title>
+    <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+    <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 0; font-family: sans-serif; }
+        #map { position: absolute; inset: 0; }
+
+        #controls {
+            position: absolute;
+            top: 10px; left: 10px;
+            z-index: 10;
+            background: white;
+            padding: 14px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            width: 300px;
+            font-size: 13px;
+        }
+        #controls h3 { margin: 0 0 8px 0; font-size: 14px; color: #333; }
+        .ctrl-label {
+            display: block; margin-top: 10px;
+            font-size: 11px; font-weight: 700; color: #555;
+            text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .ctrl-label span { font-weight: 400; color: #888; margin-left: 6px; text-transform: none; letter-spacing: 0; }
+        input[type="range"] { width: 100%; margin-top: 4px; }
+        .range-row { display: flex; gap: 6px; margin-top: 4px; }
+        .range-row input[type="number"] {
+            flex: 1; padding: 4px 6px;
+            border: 1px solid #ccc; border-radius: 4px; font-size: 12px;
+        }
+        .range-row span { line-height: 26px; font-size: 12px; color: #666; }
+
+        #status {
+            position: absolute;
+            bottom: 30px; left: 50%; transform: translateX(-50%);
+            z-index: 10;
+            background: rgba(0,0,0,0.7); color: white;
+            padding: 7px 16px; border-radius: 20px;
+            font-size: 12px; pointer-events: none;
+            display: none;
+        }
+        #status.visible { display: block; }
+        #status.error { background: rgba(180,0,0,0.8); }
+
+        #legend {
+            position: absolute; bottom: 10px; right: 10px;
+            z-index: 10; background: white;
+            padding: 8px 12px; border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            min-width: 180px; font-size: 11px;
+        }
+        #legend-title { font-weight: 700; color: #444; margin-bottom: 5px; }
+        #legend-bar {
+            height: 12px; border-radius: 3px;
+            background: linear-gradient(to right, #2166ac, #4393c3, #92c5de, #f7f7f7, #f4a582, #d6604d, #b2182b);
+        }
+        #legend-labels { display: flex; justify-content: space-between; color: #666; margin-top: 3px; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+
+    <div id="controls">
+        <h3>🌡 GFS Forecast (Direct Icechunk)</h3>
+        <p style="margin:0 0 4px; font-size:11px; color:#888;">Reads directly from S3 via zarr-layer + icechunk-js — no tile server</p>
+
+        <label class="ctrl-label">
+            Lead Time
+            <span id="lead-label">0 h</span>
+        </label>
+        <input type="range" id="lead-slider" min="0" max="48" step="1" value="0" />
+
+        <label class="ctrl-label">
+            Init Time (index)
+            <span id="init-label">0</span>
+        </label>
+        <input type="range" id="init-slider" min="0" max="100" step="1" value="0" />
+        <p style="margin:2px 0 0; font-size:10px; color:#aaa;">index 0 = oldest; drag right for more recent</p>
+
+        <label class="ctrl-label">Color Range</label>
+        <div class="range-row">
+            <input type="number" id="clim-min" value="-40" step="5" />
+            <span>to</span>
+            <input type="number" id="clim-max" value="40" step="5" />
+        </div>
+    </div>
+
+    <div id="legend">
+        <div id="legend-title">2-m Temperature (°C)</div>
+        <div id="legend-bar"></div>
+        <div id="legend-labels">
+            <span id="legend-min">-40</span>
+            <span id="legend-max">40</span>
+        </div>
+    </div>
+
+    <div id="status" class="visible">Loading…</div>
+
+    <script type="module">
+        import { ZarrLayer } from 'https://cdn.jsdelivr.net/npm/@carbonplan/zarr-layer@0.4.2/+esm';
+        import { IcechunkStore } from 'https://cdn.jsdelivr.net/npm/@carbonplan/icechunk-js@0.2.3/+esm';
+
+        const STORE_URL = 'https://dynamical-noaa-gfs.s3.us-west-2.amazonaws.com/noaa-gfs-forecast/v0.2.7.icechunk';
+
+        // Red-blue diverging colormap (cold → warm)
+        const COLORMAP = [
+            '#2166ac', '#4393c3', '#92c5de', '#d1e5f0',
+            '#f7f7f7',
+            '#fddbc7', '#f4a582', '#d6604d', '#b2182b',
+        ];
+
+        const map = new maplibregl.Map({
+            container: 'map',
+            style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
+            zoom: 2,
+            center: [-95, 40],
+        });
+        map.addControl(new maplibregl.NavigationControl());
+
+        function setStatus(msg, isError = false) {
+            const el = document.getElementById('status');
+            if (!msg) { el.classList.remove('visible'); return; }
+            el.textContent = msg;
+            el.classList.add('visible');
+            el.classList.toggle('error', isError);
+        }
+
+        let zarrLayer = null;
+        let initIdx   = 0;
+        let leadIdx   = 0;
+
+        function currentSelector() {
+            return {
+                init_time: { selected: initIdx, type: 'index' },
+                lead_time: { selected: leadIdx, type: 'index' },
+            };
+        }
+
+        function currentClim() {
+            return [
+                parseFloat(document.getElementById('clim-min').value),
+                parseFloat(document.getElementById('clim-max').value),
+            ];
+        }
+
+        map.on('load', async () => {
+            try {
+                setStatus('Opening Icechunk store…');
+                const store = await IcechunkStore.open(STORE_URL, { branch: 'main' });
+
+                setStatus('Building layer…');
+                zarrLayer = new ZarrLayer({
+                    id: 'gfs-temp',
+                    store,
+                    variable: 'temperature_2m',
+                    clim: currentClim(),
+                    colormap: COLORMAP,
+                    selector: currentSelector(),
+                    opacity: 0.8,
+                });
+
+                map.addLayer(zarrLayer);
+                setStatus('');
+            } catch (err) {
+                console.error(err);
+                setStatus(`Error: ${err.message}`, true);
+            }
+        });
+
+        function updateLayer() {
+            if (!zarrLayer) return;
+            zarrLayer.setSelector(currentSelector());
+            zarrLayer.setClim(currentClim());
+            map.triggerRepaint();
+        }
+
+        document.getElementById('lead-slider').addEventListener('input', e => {
+            leadIdx = parseInt(e.target.value);
+            document.getElementById('lead-label').textContent = `${leadIdx} h`;
+            updateLayer();
+        });
+
+        document.getElementById('init-slider').addEventListener('input', e => {
+            initIdx = parseInt(e.target.value);
+            document.getElementById('init-label').textContent = `${initIdx}`;
+            updateLayer();
+        });
+
+        ['clim-min', 'clim-max'].forEach(id => {
+            document.getElementById(id).addEventListener('change', () => {
+                document.getElementById('legend-min').textContent = document.getElementById('clim-min').value;
+                document.getElementById('legend-max').textContent = document.getElementById('clim-max').value;
+                updateLayer();
+            });
+        });
+    </script>
+</body>
+</html>
