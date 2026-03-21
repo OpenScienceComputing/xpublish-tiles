@@ -235,22 +235,43 @@
             return iso.replace('T', ' ').replace(/\.000$/, '').replace(/Z$/, '');
         }
 
+        function parseDateSafe(s) {
+            // Avoid double-Z: values from xstac already end with Z
+            if (typeof s !== 'string') return new Date(NaN);
+            return new Date(s.endsWith('Z') ? s : s + 'Z');
+        }
+
         // Build a <select> for one dimension; stores zarr index in option.dataset.index
         function buildDimSelect(dimName, extentInfo) {
-            const { interval, resolution } = extentInfo;
+            const { interval, values, resolution, dimType, units } = extentInfo;
             const sel = document.createElement('select');
             sel.id = `dim-${dimName}`;
             sel.style.cssText = 'width:100%;box-sizing:border-box;padding:6px 8px;margin-top:4px;border:1px solid #ccc;border-radius:4px;font-size:13px;';
 
-            const isNs       = typeof interval[0] === 'string' && interval[0].includes('nanoseconds');
-            const isDatetime = !isNs && typeof interval[0] === 'string' && /\d{4}-\d{2}/.test(interval[0]);
+            const isHours    = units === 'hours' && interval && typeof interval[0] === 'number';
+            const isNs       = !isHours && interval && typeof interval[0] === 'string' && interval[0].includes('nanoseconds');
+            const isDatetime = dimType === 'temporal' ||
+                               (!isHours && !isNs && interval &&
+                                typeof interval[0] === 'string' && /\d{4}-\d{2}/.test(interval[0]));
 
-            if (isNs) {
-                // Timedelta (lead_time, etc.) — index ascends with time
-                const maxH = nsToHours(interval[1]);
-                const step = maxH <= 24 ? 1 : maxH <= 120 ? 3 : 6;
+            if (values) {
+                // Explicit values list (e.g. ensemble_member with ≤100 members)
+                const unitSuffix = units && units !== '1' ? ` ${units}` : '';
+                values.forEach((v, i) => {
+                    const opt = document.createElement('option');
+                    opt.value = String(v);
+                    opt.textContent = `${v}${unitSuffix}`;
+                    opt.dataset.index = i;
+                    sel.appendChild(opt);
+                });
+            } else if (isHours || isNs) {
+                // Timedelta (lead_time, etc.) stored as hours or legacy nanoseconds
+                const maxH = isHours ? interval[1] : nsToHours(interval[1]);
+                const minH = isHours ? interval[0] : 0;
+                const step = resolution != null ? resolution :
+                             (maxH <= 24 ? 1 : maxH <= 120 ? 3 : 6);
                 let zarrIdx = 0;
-                for (let h = 0; h <= maxH + 0.001; h += step) {
+                for (let h = minH; h <= maxH + 0.001; h += step) {
                     const opt = document.createElement('option');
                     opt.value = `${Math.round(h)} hours`;
                     opt.textContent = formatHours(Math.round(h));
@@ -262,8 +283,8 @@
                 // Datetime (init_time, time, etc.) — newest first; zarr index descends
                 const stepH  = parseISO8601ToHours(resolution) || 6;
                 const stepMs = stepH * 3600000;
-                const maxDate = new Date(interval[1] + 'Z');
-                const minDate = new Date(interval[0] + 'Z');
+                const maxDate = parseDateSafe(interval[1]);
+                const minDate = parseDateSafe(interval[0]);
                 const totalSteps = Math.round((maxDate - minDate) / stepMs);
 
                 let zarrIdx = totalSteps;
@@ -280,18 +301,18 @@
                     zarrIdx--;
                     count++;
                 }
-            } else {
-                // Numeric (ensemble_member, level, etc.)
+            } else if (interval) {
+                // Numeric (level, etc.)
                 const minV = parseFloat(interval[0]);
                 const maxV = parseFloat(interval[1]);
                 const step = resolution != null ? parseFloat(resolution) : 1;
-                const units = extentInfo.units && extentInfo.units !== '1' ? ` ${extentInfo.units}` : '';
+                const unitSuffix = units && units !== '1' ? ` ${units}` : '';
                 let zarrIdx = 0;
                 for (let v = minV; v <= maxV + 0.0001; v += step) {
                     const r = Math.round(v * 1000) / 1000;
                     const opt = document.createElement('option');
                     opt.value = String(r);
-                    opt.textContent = `${r}${units}`;
+                    opt.textContent = `${r}${unitSuffix}`;
                     opt.dataset.index = zarrIdx;
                     sel.appendChild(opt);
                     zarrIdx++;
@@ -319,12 +340,14 @@
             const controls = {};
             for (const dimName of nonSpatialDims) {
                 const dimInfo = currentItemMeta.dimensions[dimName];
-                if (!dimInfo?.extent) continue;
+                if (!dimInfo?.extent && !dimInfo?.values) continue;
                 controls[dimName] = buildDimSelect(dimName, {
                     interval:    dimInfo.extent,
+                    values:      dimInfo.values,
                     resolution:  dimInfo.step,
-                    description: dimInfo.description || dimName,
+                    dimType:     dimInfo.type,
                     units:       dimInfo.unit,
+                    description: dimInfo.description || dimName,
                 });
             }
 
@@ -346,7 +369,7 @@
 
                 let bestIdx = 0, bestTime = null, foundPrior = false;
                 for (let i = 0; i < sel.options.length; i++) {
-                    const t = new Date(sel.options[i].value + 'Z');
+                    const t = parseDateSafe(sel.options[i].value);
                     if (isNaN(t)) continue;
                     if (t <= now) {
                         if (!foundPrior || t > bestTime) { bestTime = t; bestIdx = i; foundPrior = true; }
@@ -363,8 +386,9 @@
             for (const dimName of nonSpatialDims) {
                 const dimInfo = currentItemMeta.dimensions[dimName];
                 if (!dimInfo?.extent) continue;
-                const isNs = typeof dimInfo.extent[0] === 'string' && dimInfo.extent[0].includes('nanoseconds');
-                if (!isNs) continue;
+                const isNs    = typeof dimInfo.extent[0] === 'string' && dimInfo.extent[0].includes('nanoseconds');
+                const isHours = dimInfo.unit === 'hours' && typeof dimInfo.extent[0] === 'number';
+                if (!isNs && !isHours) continue;
                 const sel = controls[dimName];
                 const targetHours = referenceTime ? (now - referenceTime) / 3600000 : 0;
                 let bestIdx = 0, minDiff = Infinity;
