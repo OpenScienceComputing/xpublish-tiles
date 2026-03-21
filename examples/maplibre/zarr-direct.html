@@ -514,7 +514,9 @@
 
             // Find icechunk asset
             const asset = Object.values(item.assets || {}).find(a =>
-                a.media_type === 'application/vnd.zarr+icechunk' || (a.title || '').toLowerCase().includes('icechunk')
+                a.type === 'application/vnd.zarr+icechunk' ||
+                a.media_type === 'application/vnd.zarr+icechunk' ||
+                (a.title || '').toLowerCase().includes('icechunk')
             );
             if (!asset) throw new Error(`No icechunk asset in ${item.id}`);
 
