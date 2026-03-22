@@ -129,6 +129,7 @@
     <script type="module">
         import { ZarrLayer } from 'https://cdn.jsdelivr.net/npm/@carbonplan/zarr-layer@0.4.2/+esm';
         import { IcechunkStore } from 'https://cdn.jsdelivr.net/npm/@carbonplan/icechunk-js@0.2.3/+esm';
+        import { root as zarrRoot, open as zarrOpen, get as zarrGet } from 'https://cdn.jsdelivr.net/npm/zarrita@0.4.2/+esm';
 
         const CATALOG_URL = 'https://r2-pub.openscicomp.io/stac/dynamical/catalog.json';
 
@@ -670,6 +671,89 @@
                 setStatus(`Catalog error: ${err.message}`, true);
             }
         }
+
+        // --- Click-to-query ---
+
+        const zarrArrayCache = {};
+
+        async function getZarrArray(store, storeUrl, variable) {
+            const key = `${storeUrl}/${variable}`;
+            if (!zarrArrayCache[key]) {
+                zarrArrayCache[key] = await zarrOpen(
+                    zarrRoot(store).resolve(variable), { kind: 'array' }
+                );
+            }
+            return zarrArrayCache[key];
+        }
+
+        function getLatLonIndices(clickedLat, clickedLon) {
+            const dims = currentItemMeta.dimensions;
+            const xDim = Object.entries(dims).find(([, v]) => v.axis === 'x')?.[0];
+            const yDim = Object.entries(dims).find(([, v]) => v.axis === 'y')?.[0];
+            if (!xDim || !yDim) return null;
+            // Curvilinear grids (x/y in projected space) — skip
+            if (xDim === 'x' || yDim === 'y') return null;
+            const latInfo = dims[yDim], lonInfo = dims[xDim];
+            if (!latInfo?.extent || !latInfo?.step || !lonInfo?.extent || !lonInfo?.step) return null;
+            const latIdx = Math.round((clickedLat - latInfo.extent[0]) / latInfo.step);
+            const lonIdx = Math.round((clickedLon - lonInfo.extent[0]) / lonInfo.step);
+            const latSize = Math.round((latInfo.extent[1] - latInfo.extent[0]) / latInfo.step) + 1;
+            const lonSize = Math.round((lonInfo.extent[1] - lonInfo.extent[0]) / lonInfo.step) + 1;
+            return {
+                yDim, xDim,
+                latIdx: Math.max(0, Math.min(latSize - 1, latIdx)),
+                lonIdx: Math.max(0, Math.min(lonSize - 1, lonIdx)),
+            };
+        }
+
+        let clickPopup = null;
+
+        map.on('click', async (e) => {
+            if (!dataReady) return;
+            const { lat, lng } = e.lngLat;
+
+            if (clickPopup) clickPopup.remove();
+            clickPopup = new maplibregl.Popup({ closeButton: true })
+                .setLngLat([lng, lat])
+                .setHTML('<div style="font-size:13px">Loading…</div>')
+                .addTo(map);
+
+            const indices = getLatLonIndices(lat, lng);
+            if (!indices) {
+                clickPopup.setHTML('<div style="font-size:12px;color:#888">Point query not available<br>for curvilinear grids</div>');
+                return;
+            }
+
+            try {
+                const { yDim, xDim, latIdx, lonIdx } = indices;
+                const varId   = variableSelect.value;
+                const varInfo = currentItemMeta.variables[varId];
+                const sel     = buildSelector();
+                const store   = await getStore(currentItemMeta.storeUrl);
+                const arr     = await getZarrArray(store, currentItemMeta.storeUrl, varId);
+
+                const selection = varInfo.dimensions.map(dim => {
+                    if (dim === yDim) return latIdx;
+                    if (dim === xDim) return lonIdx;
+                    return sel[dim]?.selected ?? 0;
+                });
+
+                const result = await zarrGet(arr, selection);
+                const value  = result.data[0];
+                const unit   = varInfo?.unit && varInfo.unit !== 'not set' ? ` ${varInfo.unit}` : '';
+                const label  = varInfo?.description || varId;
+
+                clickPopup.setHTML(`
+                    <div style="font-size:13px">
+                        <b>${isNaN(value) ? 'N/A' : value.toFixed(3)}${unit}</b>
+                        <div style="color:#666;font-size:11px;margin-top:2px">${label}</div>
+                        <div style="color:#999;font-size:10px">${lat.toFixed(3)}°N, ${lng.toFixed(3)}°E</div>
+                    </div>`);
+            } catch (err) {
+                console.error(err);
+                clickPopup.setHTML(`<div style="font-size:12px;color:#c00">Error: ${err.message}</div>`);
+            }
+        });
 
         loadCatalog();
     </script>
