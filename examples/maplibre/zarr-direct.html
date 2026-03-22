@@ -756,8 +756,6 @@
                     return sel[dim]?.selected ?? 0;
                 });
 
-                console.log('click debug', { yDim, xDim, latIdx, lonIdx, varDims: varInfo.dimensions, arrayIndices, sel });
-
                 const value = await readZarrPoint(store, varId, arrayIndices);
                 const unit  = varInfo?.unit && varInfo.unit !== 'not set' ? ` ${varInfo.unit}` : '';
                 const label = varInfo?.description || varId;
