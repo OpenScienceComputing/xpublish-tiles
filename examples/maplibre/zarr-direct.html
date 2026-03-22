@@ -700,16 +700,28 @@
             throw new Error(`Unsupported codec: ${codecName}`);
         }
 
-        async function getArrayMeta(store, variable) {
+        async function getArrayMeta(store, storeUrl, variable) {
             if (!zarrMetaCache[variable]) {
-                const bytes = await store.get(`${variable}/zarr.json`);
-                zarrMetaCache[variable] = JSON.parse(new TextDecoder().decode(bytes));
+                // Try direct HTTPS fetch first (simpler, no icechunk encoding issues)
+                let meta = null;
+                try {
+                    const resp = await fetch(`${storeUrl}/${variable}/zarr.json`);
+                    if (resp.ok) meta = await resp.json();
+                } catch (_) {}
+
+                // Fall back to store.get() if HTTPS fetch failed
+                if (!meta) {
+                    const bytes = await store.get(`${variable}/zarr.json`);
+                    if (!bytes?.length) throw new Error(`No zarr metadata for ${variable}`);
+                    meta = JSON.parse(new TextDecoder().decode(bytes));
+                }
+                zarrMetaCache[variable] = meta;
             }
             return zarrMetaCache[variable];
         }
 
-        async function readZarrPoint(store, variable, arrayIndices) {
-            const meta        = await getArrayMeta(store, variable);
+        async function readZarrPoint(store, storeUrl, variable, arrayIndices) {
+            const meta        = await getArrayMeta(store, storeUrl, variable);
             const chunkShape  = meta.chunk_grid.configuration.chunk_shape;
             const dtype       = meta.data_type;   // "float32" | "float64" etc.
             const codecs      = meta.codecs ?? [];
@@ -793,7 +805,7 @@
                     return sel[dim]?.selected ?? 0;
                 });
 
-                const value = await readZarrPoint(store, varId, arrayIndices);
+                const value = await readZarrPoint(store, currentItemMeta.storeUrl, varId, arrayIndices);
                 const unit  = varInfo?.unit && varInfo.unit !== 'not set' ? ` ${varInfo.unit}` : '';
                 const label = varInfo?.description || varId;
 
