@@ -671,25 +671,78 @@
             }
         }
 
-        // --- Click-to-query ---
+        // --- Click-to-query (direct zarr v3 chunk read, no external zarr library) ---
 
-        const zarrArrayCache = {};
-        let _zarrita = null;
+        const zarrMetaCache  = {};
+        let   _fzstd         = null;
 
-        async function getZarrita() {
-            if (!_zarrita) {
-                _zarrita = await import('https://esm.sh/zarrita@0.4.2');
-            }
-            return _zarrita;
+        async function getFzstd() {
+            if (!_fzstd) _fzstd = await import('https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.js');
+            return _fzstd;
         }
 
-        async function getZarrArray(store, storeUrl, variable) {
-            const key = `${storeUrl}/${variable}`;
-            if (!zarrArrayCache[key]) {
-                const { root, open } = await getZarrita();
-                zarrArrayCache[key] = await open(root(store).resolve(variable), { kind: 'array' });
+        async function decompressBytes(raw, codecName) {
+            if (codecName === 'zstd') {
+                const fzstd = await getFzstd();
+                return fzstd.decompress(raw);
             }
-            return zarrArrayCache[key];
+            if (codecName === 'gzip') {
+                const ds = new DecompressionStream('gzip');
+                const w  = ds.writable.getWriter();
+                const r  = ds.readable.getReader();
+                w.write(raw); w.close();
+                const parts = [];
+                for (;;) { const { done, value } = await r.read(); if (done) break; parts.push(value); }
+                const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
+                let off = 0; for (const p of parts) { out.set(p, off); off += p.length; }
+                return out;
+            }
+            throw new Error(`Unsupported codec: ${codecName}`);
+        }
+
+        async function getArrayMeta(store, variable) {
+            if (!zarrMetaCache[variable]) {
+                const bytes = await store.get(`${variable}/zarr.json`);
+                zarrMetaCache[variable] = JSON.parse(new TextDecoder().decode(bytes));
+            }
+            return zarrMetaCache[variable];
+        }
+
+        async function readZarrPoint(store, variable, arrayIndices) {
+            const meta        = await getArrayMeta(store, variable);
+            const chunkShape  = meta.chunk_grid.configuration.chunk_shape;
+            const dtype       = meta.data_type;   // "float32" | "float64" etc.
+            const codecs      = meta.codecs ?? [];
+
+            const chunkIdx  = arrayIndices.map((i, d) => Math.floor(i / chunkShape[d]));
+            const localIdx  = arrayIndices.map((i, d) => i % chunkShape[d]);
+            const chunkKey  = `${variable}/c/${chunkIdx.join('/')}`;
+
+            let raw = await store.get(chunkKey);
+            if (!raw) {
+                // missing chunk → fill value
+                return parseFloat(meta.fill_value ?? 'NaN');
+            }
+
+            // Decode codecs in reverse (decompress first)
+            for (let i = codecs.length - 1; i >= 0; i--) {
+                const c = codecs[i];
+                if (c.name === 'bytes') break;          // array↔bytes boundary
+                raw = await decompressBytes(raw, c.name);
+            }
+
+            // Convert bytes → typed array (assume little-endian, matches all modern hardware)
+            const bytesPerEl = dtype.includes('64') ? 8 : 4;
+            const TypedArr   = bytesPerEl === 8 ? Float64Array : Float32Array;
+            const typed      = new TypedArr(raw.buffer, raw.byteOffset, raw.byteLength / bytesPerEl);
+
+            // Compute linear index within chunk (C-order / row-major)
+            let linear = 0, stride = 1;
+            for (let i = localIdx.length - 1; i >= 0; i--) {
+                linear += localIdx[i] * stride;
+                stride *= chunkShape[i];
+            }
+            return typed[linear];
         }
 
         function getLatLonIndices(clickedLat, clickedLon) {
@@ -697,18 +750,15 @@
             const xDim = Object.entries(dims).find(([, v]) => v.axis === 'x')?.[0];
             const yDim = Object.entries(dims).find(([, v]) => v.axis === 'y')?.[0];
             if (!xDim || !yDim) return null;
-            // Curvilinear grids (x/y in projected space) — skip
-            if (xDim === 'x' || yDim === 'y') return null;
+            if (xDim === 'x' || yDim === 'y') return null; // curvilinear — skip
             const latInfo = dims[yDim], lonInfo = dims[xDim];
             if (!latInfo?.extent || !latInfo?.step || !lonInfo?.extent || !lonInfo?.step) return null;
-            const latIdx = Math.round((clickedLat - latInfo.extent[0]) / latInfo.step);
-            const lonIdx = Math.round((clickedLon - lonInfo.extent[0]) / lonInfo.step);
             const latSize = Math.round((latInfo.extent[1] - latInfo.extent[0]) / latInfo.step) + 1;
             const lonSize = Math.round((lonInfo.extent[1] - lonInfo.extent[0]) / lonInfo.step) + 1;
             return {
                 yDim, xDim,
-                latIdx: Math.max(0, Math.min(latSize - 1, latIdx)),
-                lonIdx: Math.max(0, Math.min(lonSize - 1, lonIdx)),
+                latIdx: Math.max(0, Math.min(latSize - 1, Math.round((clickedLat - latInfo.extent[0]) / latInfo.step))),
+                lonIdx: Math.max(0, Math.min(lonSize - 1, Math.round((clickedLon - lonInfo.extent[0]) / lonInfo.step))),
             };
         }
 
@@ -736,19 +786,16 @@
                 const varInfo = currentItemMeta.variables[varId];
                 const sel     = buildSelector();
                 const store   = await getStore(currentItemMeta.storeUrl);
-                const arr     = await getZarrArray(store, currentItemMeta.storeUrl, varId);
 
-                const selection = varInfo.dimensions.map(dim => {
+                const arrayIndices = varInfo.dimensions.map(dim => {
                     if (dim === yDim) return latIdx;
                     if (dim === xDim) return lonIdx;
                     return sel[dim]?.selected ?? 0;
                 });
 
-                const { get: zarrGet } = await getZarrita();
-                const result = await zarrGet(arr, selection);
-                const value  = result.data[0];
-                const unit   = varInfo?.unit && varInfo.unit !== 'not set' ? ` ${varInfo.unit}` : '';
-                const label  = varInfo?.description || varId;
+                const value = await readZarrPoint(store, varId, arrayIndices);
+                const unit  = varInfo?.unit && varInfo.unit !== 'not set' ? ` ${varInfo.unit}` : '';
+                const label = varInfo?.description || varId;
 
                 clickPopup.setHTML(`
                     <div style="font-size:13px">
