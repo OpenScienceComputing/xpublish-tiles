@@ -596,6 +596,8 @@
             variableSelect.innerHTML = '<option>Loading…</option>';
             dimControls.innerHTML = '';
             dataReady = false;
+            // Clear cached zarr arrays — they're bound to the previous store
+            Object.keys(zarrArrayCache).forEach(k => delete zarrArrayCache[k]);
             setStatus('Loading dataset metadata…');
 
             try {
@@ -671,90 +673,29 @@
             }
         }
 
-        // --- Click-to-query (direct zarr v3 chunk read, no external zarr library) ---
+        // --- Click-to-query via zarrita@0.6.1 ---
 
-        const zarrMetaCache  = {};
-        let   _fzstd         = null;
-
-        async function getFzstd() {
-            if (!_fzstd) _fzstd = await import('https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.js');
-            return _fzstd;
+        let _zarrita = null;
+        async function getZarrita() {
+            if (!_zarrita) _zarrita = await import('https://esm.sh/zarrita@0.6.1');
+            return _zarrita;
         }
 
-        async function decompressBytes(raw, codecName) {
-            if (codecName === 'zstd') {
-                const fzstd = await getFzstd();
-                return fzstd.decompress(raw);
+        const zarrArrayCache = {};
+        async function getZarrArray(store, variable) {
+            if (!zarrArrayCache[variable]) {
+                const { root, open } = await getZarrita();
+                zarrArrayCache[variable] = await open(root(store).resolve(variable), { kind: 'array' });
             }
-            if (codecName === 'gzip') {
-                const ds = new DecompressionStream('gzip');
-                const w  = ds.writable.getWriter();
-                const r  = ds.readable.getReader();
-                w.write(raw); w.close();
-                const parts = [];
-                for (;;) { const { done, value } = await r.read(); if (done) break; parts.push(value); }
-                const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
-                let off = 0; for (const p of parts) { out.set(p, off); off += p.length; }
-                return out;
-            }
-            throw new Error(`Unsupported codec: ${codecName}`);
+            return zarrArrayCache[variable];
         }
 
-        async function getArrayMeta(store, storeUrl, variable) {
-            if (!zarrMetaCache[variable]) {
-                // Try direct HTTPS fetch first (simpler, no icechunk encoding issues)
-                let meta = null;
-                try {
-                    const resp = await fetch(`${storeUrl}/${variable}/zarr.json`);
-                    if (resp.ok) meta = await resp.json();
-                } catch (_) {}
-
-                // Fall back to store.get() if HTTPS fetch failed
-                if (!meta) {
-                    const bytes = await store.get(`${variable}/zarr.json`);
-                    if (!bytes?.length) throw new Error(`No zarr metadata for ${variable}`);
-                    meta = JSON.parse(new TextDecoder().decode(bytes));
-                }
-                zarrMetaCache[variable] = meta;
-            }
-            return zarrMetaCache[variable];
-        }
-
-        async function readZarrPoint(store, storeUrl, variable, arrayIndices) {
-            const meta        = await getArrayMeta(store, storeUrl, variable);
-            const chunkShape  = meta.chunk_grid.configuration.chunk_shape;
-            const dtype       = meta.data_type;   // "float32" | "float64" etc.
-            const codecs      = meta.codecs ?? [];
-
-            const chunkIdx  = arrayIndices.map((i, d) => Math.floor(i / chunkShape[d]));
-            const localIdx  = arrayIndices.map((i, d) => i % chunkShape[d]);
-            const chunkKey  = `${variable}/c/${chunkIdx.join('/')}`;
-
-            let raw = await store.get(chunkKey);
-            if (!raw) {
-                // missing chunk → fill value
-                return parseFloat(meta.fill_value ?? 'NaN');
-            }
-
-            // Decode codecs in reverse (decompress first)
-            for (let i = codecs.length - 1; i >= 0; i--) {
-                const c = codecs[i];
-                if (c.name === 'bytes') break;          // array↔bytes boundary
-                raw = await decompressBytes(raw, c.name);
-            }
-
-            // Convert bytes → typed array (assume little-endian, matches all modern hardware)
-            const bytesPerEl = dtype.includes('64') ? 8 : 4;
-            const TypedArr   = bytesPerEl === 8 ? Float64Array : Float32Array;
-            const typed      = new TypedArr(raw.buffer, raw.byteOffset, raw.byteLength / bytesPerEl);
-
-            // Compute linear index within chunk (C-order / row-major)
-            let linear = 0, stride = 1;
-            for (let i = localIdx.length - 1; i >= 0; i--) {
-                linear += localIdx[i] * stride;
-                stride *= chunkShape[i];
-            }
-            return typed[linear];
+        async function readZarrPoint(store, variable, arrayIndices) {
+            const { get: zarrGet } = await getZarrita();
+            const arr = await getZarrArray(store, variable);
+            const result = await zarrGet(arr, arrayIndices.map(i => i));
+            const val = result.data[0];
+            return typeof val === 'number' ? val : NaN;
         }
 
         function getLatLonIndices(clickedLat, clickedLon) {
@@ -805,7 +746,7 @@
                     return sel[dim]?.selected ?? 0;
                 });
 
-                const value = await readZarrPoint(store, currentItemMeta.storeUrl, varId, arrayIndices);
+                const value = await readZarrPoint(store, varId, arrayIndices);
                 const unit  = varInfo?.unit && varInfo.unit !== 'not set' ? ` ${varInfo.unit}` : '';
                 const label = varInfo?.description || varId;
 
