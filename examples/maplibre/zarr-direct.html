@@ -129,7 +129,6 @@
     <script type="module">
         import { ZarrLayer } from 'https://cdn.jsdelivr.net/npm/@carbonplan/zarr-layer@0.4.2/+esm';
         import { IcechunkStore } from 'https://cdn.jsdelivr.net/npm/@carbonplan/icechunk-js@0.2.3/+esm';
-        import { root as zarrRoot, open as zarrOpen, get as zarrGet } from 'https://cdn.jsdelivr.net/npm/zarrita@0.4.2/+esm';
 
         const CATALOG_URL = 'https://r2-pub.openscicomp.io/stac/dynamical/catalog.json';
 
@@ -675,13 +674,20 @@
         // --- Click-to-query ---
 
         const zarrArrayCache = {};
+        let _zarrita = null;
+
+        async function getZarrita() {
+            if (!_zarrita) {
+                _zarrita = await import('https://cdn.jsdelivr.net/npm/zarrita@0.4.2/+esm');
+            }
+            return _zarrita;
+        }
 
         async function getZarrArray(store, storeUrl, variable) {
             const key = `${storeUrl}/${variable}`;
             if (!zarrArrayCache[key]) {
-                zarrArrayCache[key] = await zarrOpen(
-                    zarrRoot(store).resolve(variable), { kind: 'array' }
-                );
+                const { root, open } = await getZarrita();
+                zarrArrayCache[key] = await open(root(store).resolve(variable), { kind: 'array' });
             }
             return zarrArrayCache[key];
         }
@@ -738,6 +744,7 @@
                     return sel[dim]?.selected ?? 0;
                 });
 
+                const { get: zarrGet } = await getZarrita();
                 const result = await zarrGet(arr, selection);
                 const value  = result.data[0];
                 const unit   = varInfo?.unit && varInfo.unit !== 'not set' ? ` ${varInfo.unit}` : '';
