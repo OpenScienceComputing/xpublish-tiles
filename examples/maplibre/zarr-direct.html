@@ -694,8 +694,11 @@
             const { get: zarrGet } = await getZarrita();
             const arr = await getZarrArray(store, variable);
             const result = await zarrGet(arr, arrayIndices.map(i => i));
-            const val = result.data[0];
-            return typeof val === 'number' ? val : NaN;
+            if (result === null || result === undefined) return NaN;
+            if (typeof result === 'number') return result;
+            if (result?.data) return Number(result.data[0]);
+            if (ArrayBuffer.isView(result)) return Number(result[0]);
+            return NaN;
         }
 
         function getLatLonIndices(clickedLat, clickedLon) {
